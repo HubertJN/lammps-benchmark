@@ -1,0 +1,211 @@
+
+#-------------------------- Initial Setup -------------------------------------#
+
+units             lj
+#atom_style        atomic
+#atom_style        sphere
+atom_style        hybrid sphere dipole
+
+
+# specifiy some variables
+variable          npart1        equal   600
+variable          npart2        equal   ${npart1}
+variable          npart3        equal   ${npart1}
+variable          npart4        equal   ${npart1}
+variable          npart5        equal   ${npart1}
+variable          npart         equal   (${npart1}+${npart2}+${npart3}+${npart4}+${npart5})
+
+variable          boxside       equal   18.77005   #  17.65015    #   10.32187 # 10.32187  # 18.77005
+variable          rho           equal   ${npart}/(${boxside}*${boxside}*${boxside})
+variable          temper        equal   1.0
+
+variable          sigma11       equal   1.063246 #1.0
+variable          sigma22       equal   1.031623 #0.970257 # 0.867918 # 0.95  # 0.8                           # diameter of B species (A is set to 1)
+variable          sigma33       equal   1.0 #0.940513 # 0.867918
+variable          sigma44       equal   0.968377 #0.91077 # 0.867918
+variable          sigma55       equal   0.936754 # 0.881026 # 0.867918
+
+
+variable          sigma12       equal   0.5*(1.0+${sigma22})                   # cross diameter (additive)
+variable          sigma13       equal   0.5*(1.0+${sigma33})                   # cross diameter (additive)
+variable          sigma14       equal   0.5*(1.0+${sigma44})                   # cross diameter (additive)
+variable          sigma15       equal   0.5*(1.0+${sigma55})                   # cross diameter (additive)
+variable          sigma23       equal   0.5*(${sigma22}+${sigma33})            # cross diameter (additive)
+variable          sigma24       equal   0.5*(${sigma22}+${sigma44})            # cross diameter (additive)
+variable          sigma25       equal   0.5*(${sigma22}+${sigma55})            # cross diameter (additive)
+variable          sigma34       equal   0.5*(${sigma33}+${sigma44})            # cross diameter (additive)
+variable          sigma35       equal   0.5*(${sigma33}+${sigma55})            # cross diameter (additive)
+variable          sigma45       equal   0.5*(${sigma44}+${sigma55})            # cross diameter (additive)
+
+
+variable          rWCAcut11     equal   2^(1/6)                                # cut off for WCA 11
+variable          rWCAcut22     equal   2^(1/6)*${sigma22}                     # cut off for WCA 22
+variable          rWCAcut33     equal   2^(1/6)*${sigma33}                     # cut off for WCA 33
+variable          rWCAcut44     equal   2^(1/6)*${sigma44}                     # cut off for WCA 44
+variable          rWCAcut55     equal   2^(1/6)*${sigma55}                     # cut off for WCA 55
+
+variable          rWCAcut12     equal   2^(1/6)*${sigma12}                     # cut off for WCA 12
+variable          rWCAcut13     equal   2^(1/6)*${sigma13}                     # cut off for WCA 13
+variable          rWCAcut14     equal   2^(1/6)*${sigma14}                     # cut off for WCA 14
+variable          rWCAcut15     equal   2^(1/6)*${sigma15}                     # cut off for WCA 15
+
+variable          rWCAcut23     equal   2^(1/6)*${sigma23}                     # cut off for WCA 23
+variable          rWCAcut24     equal   2^(1/6)*${sigma24}                     # cut off for WCA 24
+variable          rWCAcut25     equal   2^(1/6)*${sigma25}                     # cut off for WCA 25
+
+variable          rWCAcut34     equal   2^(1/6)*${sigma34}                     # cut off for WCA 34
+variable          rWCAcut35     equal   2^(1/6)*${sigma35}                     # cut off for WCA 35
+variable          rWCAcut45     equal   2^(1/6)*${sigma45}                     # cut off for WCA 45
+
+
+variable          rDipoleCut    equal   5.0                         # cut off for dipole
+variable          epsilonlj     equal   10.0/${temper}              # interaction strength (for final runs)
+variable          epsilonljdip  equal   0.001 # 1.0/${temper}       # interaction strength (for final runs)
+variable          mudipole      equal   2.116601 # 1.4 # 3.54964787 # 2.116601 # 1.682804 #  3.0 # 1.732050808 # 2.5 # 1.732050808                       #strength of dipole
+variable          mudipole11    equal   ${mudipole}
+variable          mudipole22    equal   ${mudipole}#*${sigma22}*${sigma22}*${sigma22}
+variable          mudipole33    equal   ${mudipole}#*${sigma33}*${sigma33}*${sigma33}
+variable          mudipole44    equal   ${mudipole}#*${sigma44}*${sigma44}*${sigma44}
+variable          mudipole55    equal   ${mudipole}#*${sigma55}*${sigma55}*${sigma55}
+
+
+
+variable          timestep      equal   0.002 # 0.00125
+variable          timeequilunit equal   200                                   # equil time time units
+variable          timeprodunit  equal   100                                   # prod time time units
+variable          timeequil     equal   round(${timeequilunit}/${timestep})    # in units of timesteps  -- but scale
+variable          timeprod      equal   round(${timeprodunit}/${timestep})     # in units of timesteps  -- but scale
+#variable          damptime      equal   100*${timestep}                        # damping time
+variable          langdamp      equal   0.1                                    # langevin damping parameter
+variable          dumpfreq      equal   round(1/${timestep})                   # frequency to dump
+variable          thermofreq    equal   round(1/${timestep})      # frequency to dump termodynamic data
+
+
+
+
+#-------------------------- System Setup --------------------------------------#
+
+region            myRegion block 0 ${boxside} 0 ${boxside} 0 ${boxside}              # Geometrical region.
+create_box        5 myRegion                             # create simulation box with 5 atom types
+create_atoms      1 random ${npart5} 955955 NULL         # create species 2 randomly in the box.
+create_atoms      2 random ${npart1} 341341 NULL         # create species 1 randomly in the box.
+create_atoms      3 random ${npart2} 127569 NULL         # create species 2 randomly in the box.
+create_atoms      4 random ${npart3} 300574 NULL         # create species 2 randomly in the box.
+create_atoms      5 random ${npart4} 300579 NULL         # create species 2 randomly in the box.
+
+mass              1 1
+mass              2 1
+mass              3 1
+mass              4 1
+mass              5 1
+
+
+#pair_style        hybrid/overlay lj/cut ${rWCAcutAA} lj/cut/dipole/long ${rWCAcutAA} ${rDipoleCut}  # specify global cut offs
+
+# we have changed rWCAcutAA for 2.5
+pair_style        hybrid/overlay lj/cut 2.5 lj/cut/dipole/long 2.5 ${rDipoleCut}  # specify global cut offs
+
+pair_modify       pair lj/cut shift yes #shifts LJ to become WCA
+
+#WCA
+pair_coeff        1 1 lj/cut ${epsilonlj} 1          ${rWCAcut11} # epsilon sigma cutoff 11
+pair_coeff        2 2 lj/cut ${epsilonlj} ${sigma22} ${rWCAcut22} # epsilon sigma cutoff 22
+pair_coeff        3 3 lj/cut ${epsilonlj} ${sigma33} ${rWCAcut33} # epsilon sigma cutoff 33
+pair_coeff        4 4 lj/cut ${epsilonlj} ${sigma44} ${rWCAcut44} # epsilon sigma cutoff 44
+pair_coeff        5 5 lj/cut ${epsilonlj} ${sigma55} ${rWCAcut55} # epsilon sigma cutoff 55
+
+pair_coeff        1 2 lj/cut ${epsilonlj} ${sigma12} ${rWCAcut12} # epsilon sigma cutoff 12
+pair_coeff        1 3 lj/cut ${epsilonlj} ${sigma13} ${rWCAcut13} # epsilon sigma cutoff 13
+pair_coeff        1 4 lj/cut ${epsilonlj} ${sigma14} ${rWCAcut14} # epsilon sigma cutoff 14
+pair_coeff        1 5 lj/cut ${epsilonlj} ${sigma15} ${rWCAcut15} # epsilon sigma cutoff 15
+
+pair_coeff        2 3 lj/cut ${epsilonlj} ${sigma23} ${rWCAcut23} # epsilon sigma cutoff 23
+pair_coeff        2 4 lj/cut ${epsilonlj} ${sigma24} ${rWCAcut24} # epsilon sigma cutoff 24
+pair_coeff        2 5 lj/cut ${epsilonlj} ${sigma25} ${rWCAcut25} # epsilon sigma cutoff 25
+pair_coeff        3 4 lj/cut ${epsilonlj} ${sigma34} ${rWCAcut34} # epsilon sigma cutoff 34
+pair_coeff        3 5 lj/cut ${epsilonlj} ${sigma35} ${rWCAcut35} # epsilon sigma cutoff 35
+pair_coeff        4 5 lj/cut ${epsilonlj} ${sigma45} ${rWCAcut45} # epsilon sigma cutoff 45
+
+
+
+#dipolar
+pair_coeff        1 1 lj/cut/dipole/long ${epsilonljdip}   1           ${rDipoleCut} #${gamma} 1 # for lj/cut/dipole/long species species epsilon sigma cut AA
+pair_coeff        2 2 lj/cut/dipole/long ${epsilonljdip}   ${sigma22}  ${rDipoleCut}
+pair_coeff        3 3 lj/cut/dipole/long ${epsilonljdip}   ${sigma33}  ${rDipoleCut}
+pair_coeff        4 4 lj/cut/dipole/long ${epsilonljdip}   ${sigma44}  ${rDipoleCut}
+pair_coeff        5 5 lj/cut/dipole/long ${epsilonljdip}   ${sigma55}  ${rDipoleCut}
+
+pair_coeff        1 2 lj/cut/dipole/long ${epsilonljdip}   ${sigma12}  ${rDipoleCut}
+pair_coeff        1 3 lj/cut/dipole/long ${epsilonljdip}   ${sigma13}  ${rDipoleCut}
+pair_coeff        1 4 lj/cut/dipole/long ${epsilonljdip}   ${sigma14}  ${rDipoleCut}
+pair_coeff        1 5 lj/cut/dipole/long ${epsilonljdip}   ${sigma15}  ${rDipoleCut}
+
+pair_coeff        2 3 lj/cut/dipole/long ${epsilonljdip}   ${sigma23}  ${rDipoleCut}
+pair_coeff        2 4 lj/cut/dipole/long ${epsilonljdip}   ${sigma24}  ${rDipoleCut}
+pair_coeff        2 5 lj/cut/dipole/long ${epsilonljdip}   ${sigma25}  ${rDipoleCut}
+pair_coeff        3 4 lj/cut/dipole/long ${epsilonljdip}   ${sigma34}  ${rDipoleCut}
+pair_coeff        3 5 lj/cut/dipole/long ${epsilonljdip}   ${sigma35}  ${rDipoleCut}
+pair_coeff        4 5 lj/cut/dipole/long ${epsilonljdip}   ${sigma45}  ${rDipoleCut}
+
+
+
+
+#fix               2 all nvt temp ${temper} ${temper} ${damptime}
+set               type 1 dipole 0 0 ${mudipole55} #setting dipole to z-axis.
+set               type 2 dipole 0 0 ${mudipole11} #setting dipole to z-axis.
+set               type 3 dipole 0 0 ${mudipole22} #setting dipole to z-axis.
+set               type 4 dipole 0 0 ${mudipole33} #setting dipole to z-axis.
+set               type 5 dipole 0 0 ${mudipole44} #setting dipole to z-axis.
+
+kspace_style      ewald/dipole 1.0e-4 # ewald summation for long range dipole interactions in periodic boundary conditions
+
+
+minimize 	      1e-1 1e-1 3000 3000			               # quick energy minimization so that no overlaps
+
+
+
+#-------------------------- Initialisation ------------------------------------#
+
+velocity          all create ${temper} 48390 loop geom      # Temp TEMPINIT, Seed 87287
+neighbor          0.3 bin
+neigh_modify      delay 0 every 20 check no
+#fix               1 all nvt temp ${tempinit} ${tempinit} ${damptime}    # fix#, all atoms, ensemble, temp-> T_init, T_end, timestep for damping in thermostat
+
+
+
+fix               1 all langevin ${temper} ${temper} ${langdamp} 372819              # langevin dynamics
+fix               2 all nve temp 1.0 1.0 1.0 drag 1.0 mtk no pchain 0 tchain 1
+
+
+thermo_style      custom step elapsed temp epair etotal press # vol     # timestep, elapsed time (time units), temp, potential energy, total energy, pressure
+thermo            ${dumpfreq}   # frequency to print form thermo_style
+timestep          ${timestep}
+
+
+#-------------------------- run -----------------------------------------------#
+# All these variables are used for output
+variable varstep equal step
+variable vartemp equal temp
+variable varetotal equal etotal
+
+
+fix               thermo_print_equil all print ${thermofreq} "${varstep} ${varetotal}" append dipolarWCA_fives_npart_${npart}_rho_${rho}_mu_${mudipole}_timeequil_${timeequilunit}.thermo.txt title "step total_energy" screen no
+dump              snap_equil all xyz ${dumpfreq} dipolarWCA_fives_npart_${npart}_rho_${rho}_mu_${mudipole}_timeequil_${timeequilunit}.xyz       # 4th argument is time separation between frames
+dump_modify       snap_equil element A B C D E
+run               ${timeequil}
+unfix             thermo_print_equil
+undump            snap_equil
+
+
+
+
+#unfix             thermo_print_prod
+#undump            snap_prod
+
+
+fix               thermo_print_prod all print ${thermofreq} "${varstep} ${varetotal}" append dipolarWCA_fives_npart_${npart}_rho_${rho}_mu_${mudipole}_timeprod_${timeprodunit}.thermo.txt title "step total_energy" screen no
+dump              snap_prod all xyz ${dumpfreq} dipolarWCA_fives_npart_${npart}_rho_${rho}_mudipole_${mudipole}_timeprod_${timeprodunit}.xyz       # 4th argument is time separation between frames
+dump_modify       snap_prod element A B C D E
+run               ${timeprod}
+unfix             thermo_print_prod
+undump            snap_prod

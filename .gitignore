@@ -1,0 +1,6 @@
+.venv
+mylammps
+modules.sh
+__pycache__
+runs
+log.lammps
