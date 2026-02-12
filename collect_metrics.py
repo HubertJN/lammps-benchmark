@@ -73,8 +73,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--dcut", default=",".join(str(x) for x in DEFAULT_SWEEP["dcut"]), help="Comma-separated dcut values")
     args = ap.parse_args(argv)
 
-
-    runs_dir = Path(args.runs_dir)
+    runs_dir = Path(args.runs_dir), Path
     runs_dir.mkdir(parents=True, exist_ok=True)
 
     lmp = str(args.lmp)
@@ -84,7 +83,6 @@ def main(argv: list[str] | None = None) -> int:
 
     max_parallel = int(args.max_parallel)
     timeout_padding_s = float(args.timeout_padding_s)
-
 
     fallback_timeout_s = args.fallback_timeout_s
     if fallback_timeout_s is not None:
