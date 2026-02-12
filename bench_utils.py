@@ -224,7 +224,7 @@ def parse_log(text: str) -> Dict[str, Any]:
 
     return out
 
-def collect_logs_to_json(log_dir: Path, out_json: Path) -> Dict[str, Any]:
+def collect_logs_to_json(log_dir: Path, out_json: Path, *, runs_dir: Path = RUNS_DIR) -> Dict[str, Any]:
     summary: Dict[str, Any] = {
         "machine": get_machine_info(),
         "runs": [],
@@ -239,7 +239,7 @@ def collect_logs_to_json(log_dir: Path, out_json: Path) -> Dict[str, Any]:
         runs_by_tag[tag] = {"tag": tag, "log_path": str(log_path), **run_data}
 
     # Merge runner metadata (e.g., timeouts/return codes) from runs/<tag>/run_result.json.
-    for result_path in sorted(RUNS_DIR.glob("*/run_result.json")):
+    for result_path in sorted(runs_dir.glob("*/run_result.json")):
         tag = result_path.parent.name
         runner = read_json(result_path)
 

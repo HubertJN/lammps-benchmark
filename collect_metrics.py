@@ -1,27 +1,29 @@
+import argparse
 import math
 import os
 from itertools import product
 from multiprocessing import Pool
 from pathlib import Path
 
-from bench_utils import *
+from bench_utils import (
+    canonical_params,
+    collect_logs_to_json,
+    index_existing_runs,
+    normalize_value,
+    read_json,
+    reserve_run_ids,
+    run_complete,
+    run_lammps_job,
+)
 
-LMP = "mylammps/build/lmp"
-INP = "in.performance_test.lmp"
-MANUAL_INP = "in.manual.lmp"
-MANUAL_TAG = "manual"
 
-MAX_PARALLEL = int(os.environ.get("MAX_PARALLEL", "8"))
-TIMEOUT_PADDING_S = float(os.environ.get("TIMEOUT_PADDING_S", "300"))  # add 5 minutes by default
-if TIMEOUT_PADDING_S < 0:
-    TIMEOUT_PADDING_S = 0.0
+DEFAULT_LMP = "mylammps/build/lmp"
+DEFAULT_INPUT = "in.performance_test.lmp"
+DEFAULT_MANUAL_INPUT = "in.manual.lmp"
+DEFAULT_MANUAL_TAG = "manual"
 
-FALLBACK_TIMEOUT_S = float(os.environ.get("RUN_TIMEOUT_S", "1800"))  # used only if manual timing unavailable
-if FALLBACK_TIMEOUT_S <= 0:
-    FALLBACK_TIMEOUT_S = None
 
-# Sweep over kspace styles directly.
-SWEEP = {
+DEFAULT_SWEEP = {
     "ks": [
         "ewald_dipole",
         "pppm_dipole",
@@ -31,84 +33,153 @@ SWEEP = {
     "dcut": [4, 5, 6, 7, 8, 9, 10],
 }
 
-runs_dir = Path("runs")
-runs_dir.mkdir(parents=True, exist_ok=True)
 
-sweep_keys = [k for k in SWEEP.keys() if k != "ks"]
-sweep_values = [SWEEP[k] for k in sweep_keys]
+def parse_csv(s: str) -> list[str]:
+    return [p.strip() for p in str(s).split(",") if p.strip()]
 
 
-# Index existing sweep runs once in the parent process (normalize sweep values for stable matching)
-include_sweep = ["input", "lmp", "ks"] + sweep_keys
-existing_sweep = index_existing_runs(
-    runs_dir,
-    run_glob="run_*",
-    include_keys=include_sweep,
-    normalize=lambda p: [p.__setitem__(k, normalize_value(k, p[k])) for k in sweep_keys if k in p],
-)
+def parse_csv_ints(s: str) -> list[int]:
+    return [int(p) for p in parse_csv(s)]
 
 
-# Build pending sweep cases (skip if matching params + non-empty log exists)
-pending = []  # list[(run_id_or_None, ks, combo_dict)]
-skipped = []  # list[(run_id, ks, combo_dict)]
+def _normalize_sweep_params(params: dict, sweep_keys: list[str]) -> None:
+    for k in sweep_keys:
+        if k in params:
+            params[k] = normalize_value(k, params[k])
 
-for ks in SWEEP["ks"]:
-    for combo in product(*sweep_values):
-        combo_dict = {k: normalize_value(k, v) for k, v in zip(sweep_keys, combo)}
-        desired_params = {"input": INP, "lmp": LMP, "ks": ks, **combo_dict}
-        sig = canonical_params(desired_params, include_keys=include_sweep)
 
-        existing_id = existing_sweep.get(sig)
-        if existing_id is not None:
-            run_dir = runs_dir / existing_id
-            if run_complete(run_dir):
-                skipped.append((existing_id, ks, combo_dict))
+def main(argv: list[str] | None = None) -> int:
+    env_max_parallel = int(os.environ.get("MAX_PARALLEL", "8"))
+    env_timeout_padding_s = float(os.environ.get("TIMEOUT_PADDING_S", "300"))
+    if env_timeout_padding_s < 0:
+        env_timeout_padding_s = 0.0
+
+    env_fallback_timeout_s = float(os.environ.get("RUN_TIMEOUT_S", "1800"))
+    if env_fallback_timeout_s <= 0:
+        env_fallback_timeout_s = None
+
+    ap = argparse.ArgumentParser(description="Run LAMMPS benchmark sweep, collect logs, and write benchmark_summary.json")
+    ap.add_argument("--runs-dir", default="runs", help="Directory containing run_* folders")
+    ap.add_argument("--lmp", default=DEFAULT_LMP, help="Path to LAMMPS executable")
+    ap.add_argument("--input", default=DEFAULT_INPUT, help="LAMMPS input script for sweep runs")
+    ap.add_argument("--manual-input", default=DEFAULT_MANUAL_INPUT, help="LAMMPS input script for manual baseline")
+    ap.add_argument("--manual-tag", default=DEFAULT_MANUAL_TAG, help="Run directory tag for manual baseline")
+    ap.add_argument("--max-parallel", type=int, default=env_max_parallel, help="Max parallel LAMMPS runs")
+    ap.add_argument(
+        "--timeout-padding-s",
+        type=float,
+        default=env_timeout_padding_s,
+        help="Extra seconds added to derived timeout from manual runtime",
+    )
+    ap.add_argument(
+        "--fallback-timeout-s",
+        type=float,
+        default=env_fallback_timeout_s,
+        help="Timeout used if manual runtime unavailable (<=0 disables timeout)",
+    )
+    ap.add_argument("--ks", default=",".join(DEFAULT_SWEEP["ks"]), help="Comma-separated kspace styles")
+    ap.add_argument("--kacc", default=",".join(DEFAULT_SWEEP["kacc"]), help="Comma-separated kspace accuracies")
+    ap.add_argument(
+        "--dcut",
+        default=",".join(str(x) for x in DEFAULT_SWEEP["dcut"]),
+        help="Comma-separated dcut values",
+    )
+    args = ap.parse_args(argv)
+
+    runs_dir = Path(args.runs_dir)
+    runs_dir.mkdir(parents=True, exist_ok=True)
+
+    lmp = str(args.lmp)
+    inp = str(args.input)
+    manual_inp = str(args.manual_input)
+    manual_tag = str(args.manual_tag)
+
+    max_parallel = int(args.max_parallel)
+    timeout_padding_s = float(args.timeout_padding_s)
+    if timeout_padding_s < 0:
+        timeout_padding_s = 0.0
+
+    fallback_timeout_s = args.fallback_timeout_s
+    if fallback_timeout_s is not None:
+        try:
+            fallback_timeout_s = float(fallback_timeout_s)
+        except Exception:
+            fallback_timeout_s = None
+    if isinstance(fallback_timeout_s, (int, float)) and fallback_timeout_s <= 0:
+        fallback_timeout_s = None
+
+    sweep = {
+        "ks": parse_csv(args.ks),
+        "kacc": parse_csv(args.kacc),
+        "dcut": parse_csv_ints(args.dcut),
+    }
+
+    sweep_keys = [k for k in sweep.keys() if k != "ks"]
+    sweep_values = [sweep[k] for k in sweep_keys]
+
+    include_sweep = ["input", "lmp", "ks"] + sweep_keys
+    existing_sweep = index_existing_runs(
+        runs_dir,
+        run_glob="run_*",
+        include_keys=include_sweep,
+        normalize=lambda p: _normalize_sweep_params(p, sweep_keys),
+    )
+
+    pending: list[tuple[str | None, str, dict]] = []
+    skipped: list[tuple[str, str, dict]] = []
+
+    for ks in sweep["ks"]:
+        for combo in product(*sweep_values):
+            combo_dict = {k: normalize_value(k, v) for k, v in zip(sweep_keys, combo)}
+            desired_params = {"input": inp, "lmp": lmp, "ks": ks, **combo_dict}
+            sig = canonical_params(desired_params, include_keys=include_sweep)
+
+            existing_id = existing_sweep.get(sig)
+            if existing_id is not None:
+                run_dir = runs_dir / existing_id
+                if run_complete(run_dir):
+                    skipped.append((existing_id, ks, combo_dict))
+                    continue
+                pending.append((existing_id, ks, combo_dict))
                 continue
-            pending.append((existing_id, ks, combo_dict))
-            continue
 
-        pending.append((None, ks, combo_dict))
+            pending.append((None, ks, combo_dict))
 
+    need_new = sum(1 for rid, _, _ in pending if rid is None)
+    new_ids = reserve_run_ids(runs_dir, need_new)
+    new_it = iter(new_ids)
+    jobs = [(rid if rid is not None else next(new_it), ks, combo_dict) for rid, ks, combo_dict in pending]
 
-# Allocate new run IDs only for truly-missing cases
-need_new = sum(1 for rid, _, _ in pending if rid is None)
-new_ids = reserve_run_ids(runs_dir, need_new)
-new_it = iter(new_ids)
-jobs = [(rid if rid is not None else next(new_it), ks, combo_dict) for rid, ks, combo_dict in pending]
-
-
-if __name__ == "__main__":
-    # Manual baseline: skip if params match + log exists
-    manual_dir = runs_dir / MANUAL_TAG
-    manual_params = {"run_id": MANUAL_TAG, "case": "manual", "input": MANUAL_INP, "lmp": LMP}
+    manual_dir = runs_dir / manual_tag
+    manual_params = {"run_id": manual_tag, "case": "manual", "input": manual_inp, "lmp": lmp}
     include_manual = ["case", "input", "lmp"]
     manual_sig = canonical_params(manual_params, include_keys=include_manual)
-    existing_manual = index_existing_runs(runs_dir, run_glob=MANUAL_TAG, include_keys=include_manual).get(manual_sig)
+    existing_manual = index_existing_runs(runs_dir, run_glob=manual_tag, include_keys=include_manual).get(manual_sig)
     manual_time_s = None
 
-    if existing_manual == MANUAL_TAG and run_complete(manual_dir):
+    if existing_manual == manual_tag and run_complete(manual_dir):
         recorded = read_json(manual_dir / "run_result.json")
         recorded_time = recorded.get("time_s")
         if isinstance(recorded_time, (int, float)) and recorded_time > 0:
             manual_time_s = float(recorded_time)
             print(
-                f"SKIP: {MANUAL_TAG} existing params match input={MANUAL_INP} "
+                f"SKIP: {manual_tag} existing params match input={manual_inp} "
                 f"(using recorded time={manual_time_s:.2f}s)"
             )
         else:
             print(
-                f"INFO: {MANUAL_TAG} exists but has no usable recorded runtime; "
+                f"INFO: {manual_tag} exists but has no usable recorded runtime; "
                 f"re-running to derive timeout"
             )
 
     if manual_time_s is None:
         manual_res = run_lammps_job(
             {
-                "run_id": MANUAL_TAG,
+                "run_id": manual_tag,
                 "run_dir": str(manual_dir),
-                "lmp": LMP,
-                "input": MANUAL_INP,
-                "tag": MANUAL_TAG,
+                "lmp": lmp,
+                "input": manual_inp,
+                "tag": manual_tag,
                 "vars": {},
                 "params": manual_params,
                 "meta": {},
@@ -120,23 +191,23 @@ if __name__ == "__main__":
             manual_status = f"TIMEOUT({manual_res.get('timeout_s')}s)"
         else:
             manual_status = "OK" if manual_res["returncode"] == 0 else f"FAIL(rc={manual_res['returncode']})"
-        print(f"DONE: {manual_res['run_id']} {manual_status} time={manual_res['time_s']:.2f}s input={MANUAL_INP}")
+        print(f"DONE: {manual_res['run_id']} {manual_status} time={manual_res['time_s']:.2f}s input={manual_inp}")
         if manual_res["returncode"] == 0 and not manual_res.get("timed_out"):
             manual_time_s = float(manual_res["time_s"])
 
     if manual_time_s is not None:
         rounded_manual_s = math.ceil(float(manual_time_s) / 60.0) * 60.0
-        sweep_timeout_s = rounded_manual_s + TIMEOUT_PADDING_S
+        sweep_timeout_s = rounded_manual_s + timeout_padding_s
         print(
             f"INFO: sweep timeout set from manual runtime: "
             f"ceil({manual_time_s:.2f}s to nearest minute)={rounded_manual_s:.2f}s "
-            f"+ {TIMEOUT_PADDING_S:.0f}s = {sweep_timeout_s:.2f}s"
+            f"+ {timeout_padding_s:.0f}s = {sweep_timeout_s:.2f}s"
         )
     else:
-        sweep_timeout_s = FALLBACK_TIMEOUT_S
+        sweep_timeout_s = fallback_timeout_s
         print(
             f"WARNING: could not derive timeout from manual run; "
-            f"using fallback RUN_TIMEOUT_S={sweep_timeout_s}"
+            f"using fallback timeout={sweep_timeout_s}"
         )
 
     for run_id, ks, combo_dict in skipped:
@@ -146,17 +217,17 @@ if __name__ == "__main__":
             + " ".join(f"{k}={combo_dict[k]}" for k in sweep_keys)
         )
 
-    sweep_jobs = []
+    sweep_jobs: list[dict] = []
     for run_id, ks, combo_dict in jobs:
         run_dir = runs_dir / run_id
-        params = {"run_id": run_id, "ks": ks, "input": INP, "lmp": LMP, **combo_dict}
+        params = {"run_id": run_id, "ks": ks, "input": inp, "lmp": lmp, **combo_dict}
         vars_dict = {"ks": ks, **{k: combo_dict[k] for k in sweep_keys}}
         sweep_jobs.append(
             {
                 "run_id": run_id,
                 "run_dir": str(run_dir),
-                "lmp": LMP,
-                "input": INP,
+                "lmp": lmp,
+                "input": inp,
                 "tag": run_id,
                 "vars": vars_dict,
                 "params": params,
@@ -167,7 +238,7 @@ if __name__ == "__main__":
         )
 
     if sweep_jobs:
-        with Pool(processes=MAX_PARALLEL) as pool:
+        with Pool(processes=max_parallel) as pool:
             for res in pool.imap_unordered(run_lammps_job, sweep_jobs):
                 if res.get("timed_out"):
                     status = f"TIMEOUT({float(sweep_timeout_s):.2f}s)"
@@ -179,17 +250,21 @@ if __name__ == "__main__":
                     + " ".join(f"{k}={res[k]}" for k in sweep_keys)
                 )
 
-    # Build benchmark_summary.json from all run logs
     log_dir = runs_dir / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
 
     for run_log in runs_dir.glob("run_*/lammps.log"):
         (log_dir / f"{run_log.parent.name}.log").write_text(run_log.read_text(errors="replace"))
 
-    manual_log = runs_dir / MANUAL_TAG / "lammps.log"
+    manual_log = runs_dir / manual_tag / "lammps.log"
     if manual_log.exists():
-        (log_dir / f"{MANUAL_TAG}.log").write_text(manual_log.read_text(errors="replace"))
+        (log_dir / f"{manual_tag}.log").write_text(manual_log.read_text(errors="replace"))
 
     out_json = runs_dir / "benchmark_summary.json"
-    summary = collect_logs_to_json(log_dir, out_json)
+    summary = collect_logs_to_json(log_dir, out_json, runs_dir=runs_dir)
     print(f"WROTE: {out_json}  runs={len(summary['runs'])}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
