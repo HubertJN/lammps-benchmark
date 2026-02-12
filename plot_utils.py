@@ -26,6 +26,48 @@ def fmt_num(x, *, digits: int = 3):
     except Exception:
         return "n/a"
 
+def _parse_hms_walltime_s(s: str | None) -> float | None:
+    """Parse walltime strings like H:MM:SS or MM:SS into seconds."""
+    if not s:
+        return None
+    s = str(s).strip()
+    parts = s.split(":")
+    if len(parts) not in (2, 3):
+        return None
+    try:
+        nums = [float(p) for p in parts]
+    except Exception:
+        return None
+
+    if len(nums) == 2:
+        m, sec = nums
+        return m * 60.0 + sec
+    h, m, sec = nums
+    return h * 3600.0 + m * 60.0 + sec
+
+def max_wall_time(summary: dict) -> tuple[float | None, str | None]:
+    """Return (max_seconds, tag) across all runs in summary."""
+    best_s: float | None = None
+    best_tag: str | None = None
+    for r in (summary.get("runs") or []):
+        tag = r.get("tag")
+        runner = r.get("runner") or {}
+
+        # Only consider runs that finished (exclude timeouts; and exclude nonzero returncode if known).
+        if runner.get("timed_out") is True:
+            continue
+        if runner.get("returncode") is not None and runner.get("returncode") != 0:
+            continue
+
+        t = safe_float(runner.get("time_s"))
+        if t is None:
+            t = _parse_hms_walltime_s(r.get("total_wall_time"))
+        if t is None:
+            continue
+        if best_s is None or t > best_s:
+            best_s = t
+            best_tag = tag
+    return best_s, best_tag
 
 def top_runs_by_tps(runs, n: int):
     scored = []
@@ -299,13 +341,6 @@ def opening_paragraph(top_runs, params_by_tag, *, manual_tag: str, manual_run=No
                 f"(speedup: <b>{speedup:.2f}×</b>)."
             )
 
-    return (
-        f"Fastest throughput in this sweep was achieved by <b>{tag}</b> at "
-        f"<b>{tps_s} timesteps/s</b>.<br/>"
-        f"Run parameters: kstyle=<b>{ks}</b>; {extra_s}.<br/>"
-        f"{manual_clause}"
-    )
-
 
 def build_pdf(
     *,
@@ -351,14 +386,6 @@ def build_pdf(
         manual_tps = safe_float((manual_run.get("performance") or {}).get("timesteps_per_s"))
 
     manual_energy = extract_final_total_energy_from_run(manual_run, runs_dir=runs_dir) if manual_run else None
-
-    story.append(
-        Paragraph(
-            opening_paragraph(top_runs, params_by_tag, manual_tag=manual_tag, manual_run=manual_run),
-            body,
-        )
-    )
-    story.append(Spacer(1, 0.08 * inch))
 
     params_list = [params_by_tag.get(r.get("tag", "unknown"), {}) for r in table_runs]
     param_cols = collect_param_columns(params_list)
@@ -432,6 +459,15 @@ def build_pdf(
     )
 
     story.append(Paragraph("Overview", styles["Heading2"]))
+
+    mx_s, mx_tag = max_wall_time(summary)
+    if mx_s is not None:
+        mx_line = f"Max wall time (finished runs): <b>{fmt_num(mx_s, digits=4)} s</b>"
+        if mx_tag:
+            mx_line += f" (tag: <b>{mx_tag}</b>)"
+        mx_line += "."
+        story.append(Paragraph(mx_line, body))
+
     table_desc = (
     "This table shows the best-performing sweep runs for each value of kacc. "
     "Runs are ranked by timesteps/s. "
