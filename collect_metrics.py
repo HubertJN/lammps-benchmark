@@ -49,7 +49,7 @@ def _normalize_sweep_params(params: dict, sweep_keys: list[str]) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    env_max_parallel = int(os.environ.get("MAX_PARALLEL", "8"))
+    env_max_parallel = int(os.environ.get("MAX_PARALLEL", "4"))
     env_timeout_padding_s = float(os.environ.get("TIMEOUT_PADDING_S", "300"))
     if env_timeout_padding_s < 0:
         env_timeout_padding_s = 0.0
