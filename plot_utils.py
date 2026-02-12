@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 
 from reportlab.lib.pagesizes import A4
@@ -45,10 +46,11 @@ def _parse_hms_walltime_s(s: str | None) -> float | None:
     h, m, sec = nums
     return h * 3600.0 + m * 60.0 + sec
 
-def max_wall_time(summary: dict) -> tuple[float | None, str | None]:
-    """Return (max_seconds, tag) across all runs in summary."""
+def max_wall_time(summary: dict) -> tuple[float | None, str | None, dict | None]:
+    """Return (max_seconds, tag, run_obj) across all finished runs in summary."""
     best_s: float | None = None
     best_tag: str | None = None
+    best_run: dict | None = None
     for r in (summary.get("runs") or []):
         tag = r.get("tag")
         runner = r.get("runner") or {}
@@ -67,7 +69,53 @@ def max_wall_time(summary: dict) -> tuple[float | None, str | None]:
         if best_s is None or t > best_s:
             best_s = t
             best_tag = tag
-    return best_s, best_tag
+            best_run = r
+    return best_s, best_tag, best_run
+
+
+def _extract_last_loop_metrics_from_log_text(text: str) -> tuple[int | None, int | None]:
+    """Return (atoms, steps) from the last 'Loop time...' line in a log.
+
+    For multi-run scripts, the last loop block typically corresponds to the
+    production run.
+    """
+    patt = re.compile(
+        r"Loop time of\s+[0-9.]+\s+on\s+\d+\s+procs\s+for\s+(\d+)\s+steps\s+with\s+(\d+)\s+atoms"
+    )
+    hits = patt.findall(text)
+    if not hits:
+        return None, None
+    steps_s, atoms_s = hits[-1]
+    try:
+        return int(atoms_s), int(steps_s)
+    except Exception:
+        return None, None
+
+
+def extract_production_size_from_run(run: dict, *, runs_dir: Path) -> tuple[int | None, int | None]:
+    """Best-effort extraction of (atoms, production_steps) for a run."""
+    atoms = run.get("atoms") if isinstance(run.get("atoms"), int) else None
+    steps = run.get("steps") if isinstance(run.get("steps"), int) else None
+
+    log_path = run.get("log_path")
+    if not log_path:
+        runner = run.get("runner") or {}
+        log_path = runner.get("log_path")
+
+    p = _resolve_log_path(log_path, runs_dir=runs_dir)
+    if p is None:
+        return atoms, steps
+
+    try:
+        atoms_last, steps_last = _extract_last_loop_metrics_from_log_text(p.read_text())
+    except Exception:
+        return atoms, steps
+
+    if atoms_last is not None:
+        atoms = atoms_last
+    if steps_last is not None:
+        steps = steps_last
+    return atoms, steps
 
 def top_runs_by_tps(runs, n: int):
     scored = []
@@ -460,11 +508,19 @@ def build_pdf(
 
     story.append(Paragraph("Overview", styles["Heading2"]))
 
-    mx_s, mx_tag = max_wall_time(summary)
+    mx_s, mx_tag, mx_run = max_wall_time(summary)
     if mx_s is not None:
         mx_line = f"Max wall time (finished runs): <b>{fmt_num(mx_s, digits=4)} s</b>"
         if mx_tag:
             mx_line += f" (tag: <b>{mx_tag}</b>)"
+        if mx_run is not None:
+            mx_atoms, mx_prod_steps = extract_production_size_from_run(mx_run, runs_dir=runs_dir)
+            atoms_s = f"{mx_atoms:,}" if isinstance(mx_atoms, int) else "n/a"
+            prod_steps_s = f"{mx_prod_steps:,}" if isinstance(mx_prod_steps, int) else "n/a"
+            mx_line += (
+                f". Size: <b>{atoms_s} atoms</b>; "
+                f"production run length: <b>{prod_steps_s} timesteps</b>"
+            )
         mx_line += "."
         story.append(Paragraph(mx_line, body))
 
