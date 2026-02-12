@@ -6,6 +6,9 @@ units             lj
 #atom_style        sphere
 atom_style        hybrid sphere dipole
 
+#output directory
+variable outdir string runs/${tag}
+shell mkdir ${outdir}
 
 # specifiy some variables
 variable          npart1        equal   600
@@ -174,7 +177,7 @@ neigh_modify      delay 0 every 20 check no
 
 
 fix               1 all langevin ${temper} ${temper} ${langdamp} 372819              # langevin dynamics
-fix               2 all nve temp 1.0 1.0 1.0 drag 1.0 mtk no pchain 0 tchain 1
+fix               2 all nve
 
 
 thermo_style      custom step elapsed temp epair etotal press # vol     # timestep, elapsed time (time units), temp, potential energy, total energy, pressure
@@ -189,23 +192,20 @@ variable vartemp equal temp
 variable varetotal equal etotal
 
 
-fix               thermo_print_equil all print ${thermofreq} "${varstep} ${varetotal}" append dipolarWCA_fives_npart_${npart}_rho_${rho}_mu_${mudipole}_timeequil_${timeequilunit}.thermo.txt title "step total_energy" screen no
-dump              snap_equil all xyz ${dumpfreq} dipolarWCA_fives_npart_${npart}_rho_${rho}_mu_${mudipole}_timeequil_${timeequilunit}.xyz       # 4th argument is time separation between frames
+fix thermo_print_equil all print ${thermofreq} "${varstep} ${varetotal}" append ${outdir}/equil_npart_${npart}_rho_${rho}_mu_${mudipole}_teq_${timeequilunit}.thermo.txt title "step total_energy" screen no
+dump              snap_equil all xyz ${dumpfreq} ${outdir}/equil_npart_${npart}_rho_${rho}_mu_${mudipole}_teq_${timeequilunit}.xyz
 dump_modify       snap_equil element A B C D E
-run               100 ${timeequil}
+run               100 #${timeequil}
 unfix             thermo_print_equil
 undump            snap_equil
-
-
-
 
 #unfix             thermo_print_prod
 #undump            snap_prod
 
 
-fix               thermo_print_prod all print ${thermofreq} "${varstep} ${varetotal}" append dipolarWCA_fives_npart_${npart}_rho_${rho}_mu_${mudipole}_timeprod_${timeprodunit}.thermo.txt title "step total_energy" screen no
-dump              snap_prod all xyz ${dumpfreq} dipolarWCA_fives_npart_${npart}_rho_${rho}_mudipole_${mudipole}_timeprod_${timeprodunit}.xyz       # 4th argument is time separation between frames
+fix thermo_print_prod all print ${thermofreq} "${varstep} ${varetotal}" append ${outdir}/prod_npart_${npart}_rho_${rho}_mu_${mudipole}_tprod_${timeprodunit}.thermo.txt title "step total_energy" screen no
+dump snap_prod all xyz ${dumpfreq} ${outdir}/prod_npart_${npart}_rho_${rho}_mu_${mudipole}_tprod_${timeprodunit}.xyz       # 4th argument is time separation between frames
 dump_modify       snap_prod element A B C D E
-run               100 ${timeprod}
+run               100 #${timeprod}
 unfix             thermo_print_prod
 undump            snap_prod
