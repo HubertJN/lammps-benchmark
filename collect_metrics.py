@@ -11,7 +11,7 @@ MANUAL_INP = "in.manual.lmp"
 MANUAL_TAG = "manual"
 
 MAX_PARALLEL = int(os.environ.get("MAX_PARALLEL", "8"))
-RUN_TIMEOUT_S = float(os.environ.get("RUN_TIMEOUT_S", "600")) # default 10 minutes per run
+RUN_TIMEOUT_S = float(os.environ.get("RUN_TIMEOUT_S", "1800")) # X minutes per run
 if RUN_TIMEOUT_S <= 0:
     RUN_TIMEOUT_S = None
 
