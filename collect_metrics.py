@@ -16,13 +16,12 @@ if RUN_TIMEOUT_S <= 0:
     RUN_TIMEOUT_S = None
 
 # Sweep over kspace styles directly.
-KS = [
-    "ewald_dipole",
-    "pppm_dipole",
-    "ewald_disp",
-]
-
-sweeps = {
+SWEEP = {
+    "ks": [
+        "ewald_dipole",
+        "pppm_dipole",
+        "ewald_disp",
+    ],
     "kacc": ["1.0e-3", "1.0e-4", "1.0e-5", "1.0e-6"],
     "dcut": [4, 5, 6, 7, 8, 9, 10],
 }
@@ -30,8 +29,8 @@ sweeps = {
 runs_dir = Path("runs")
 runs_dir.mkdir(parents=True, exist_ok=True)
 
-sweep_keys = list(sweeps.keys())
-sweep_values = [sweeps[k] for k in sweep_keys]
+sweep_keys = [k for k in SWEEP.keys() if k != "ks"]
+sweep_values = [SWEEP[k] for k in sweep_keys]
 
 
 # Index existing sweep runs once in the parent process (normalize sweep values for stable matching)
@@ -48,7 +47,7 @@ existing_sweep = index_existing_runs(
 pending = []  # list[(run_id_or_None, ks, combo_dict)]
 skipped = []  # list[(run_id, ks, combo_dict)]
 
-for ks in KS:
+for ks in SWEEP["ks"]:
     for combo in product(*sweep_values):
         combo_dict = {k: normalize_value(k, v) for k, v in zip(sweep_keys, combo)}
         desired_params = {"input": INP, "lmp": LMP, "ks": ks, **combo_dict}
