@@ -1,13 +1,16 @@
 import json
 from pathlib import Path
 
-import matplotlib.pyplot as plt
-
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import inch
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
+
+from reportlab.graphics.shapes import Drawing, String
+from reportlab.graphics.charts.piecharts import Pie
+from reportlab.graphics.renderPDF import GraphicsFlowable
+from reportlab.graphics import renderPDF
 
 
 def safe_float(x):
@@ -67,6 +70,79 @@ def format_param_value(v):
     return str(v)
 
 
+def _resolve_log_path(log_path: str | None, *, runs_dir: Path) -> Path | None:
+    if not log_path:
+        return None
+    p = Path(log_path)
+    if p.is_absolute():
+        return p
+    if p.exists():
+        return p
+    alt = runs_dir.parent / p
+    return alt
+
+
+def _extract_final_total_energy_from_log_text(text: str) -> float | None:
+    # Tries to read the last thermo row that contains a total-energy column.
+    # Common LAMMPS thermo keys: TotEng, Etot, E_total, etotal.
+    candidates = {"toteng", "etot", "e_total", "etotal"}
+
+    last_value: float | None = None
+    lines = text.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        if not line.startswith("Step"):
+            i += 1
+            continue
+
+        cols = line.split()
+        col_l = [c.strip().lower() for c in cols]
+        try:
+            idx = next(j for j, c in enumerate(col_l) if c in candidates)
+        except StopIteration:
+            i += 1
+            continue
+
+        # Consume following numeric thermo rows
+        i += 1
+        while i < len(lines):
+            dl = lines[i].strip()
+            if not dl:
+                break
+            parts = dl.split()
+            # Thermo rows always start with Step (numeric)
+            try:
+                float(parts[0])
+            except Exception:
+                break
+            if len(parts) > idx:
+                try:
+                    last_value = float(parts[idx])
+                except Exception:
+                    pass
+            i += 1
+
+        continue
+
+    return last_value
+
+
+def extract_final_total_energy_from_run(run: dict, *, runs_dir: Path) -> float | None:
+    log_path = run.get("log_path")
+    if not log_path:
+        runner = run.get("runner") or {}
+        log_path = runner.get("log_path")
+
+    p = _resolve_log_path(log_path, runs_dir=runs_dir)
+    if p is None:
+        return None
+    try:
+        return _extract_final_total_energy_from_log_text(p.read_text())
+    except Exception:
+        return None
+
+
 def merge_small_slices(items, merge_lt_pct: float):
     """Merge pie slices smaller than merge_lt_pct into a 'Remainder' slice."""
     big = [(k, float(v)) for k, v in items if float(v) >= merge_lt_pct]
@@ -120,31 +196,74 @@ def best_runs_by_param(runs, params_by_tag: dict, param_key: str):
     return [r for _, r in scored]
 
 
-def make_timing_pie(run, out_png: Path, merge_lt_pct: float):
+def make_timing_pie(
+    run,
+    out_path: Path,
+    merge_lt_pct: float,
+    *,
+    title: str | None = None,
+    width: float = 240,
+    height: float = 240,
+):
     timing = run.get("timing_breakdown_pct") or {}
     items = [(k, float(v)) for k, v in timing.items()]
     items.sort(key=lambda kv: kv[1], reverse=True)
 
     labels, values = merge_small_slices(items, merge_lt_pct=merge_lt_pct)
 
-    title = f"{run.get('tag', 'unknown')}"
-    ks = (run.get("kspace") or {}).get("style")
-    if ks:
-        title += f"  ({ks})"
+    if title is None:
+        title = f"{run.get('tag', 'unknown')}"
+        ks = (run.get("kspace") or {}).get("style")
+        if ks:
+            title += f"  ({ks})"
 
-    plt.figure(figsize=(3.0, 3.0), dpi=200)
-    plt.title(title, fontsize=9)
-    plt.pie(
-        values,
-        labels=labels,
-        autopct="%1.0f%%",
-        textprops={"fontsize": 7},
-        labeldistance=1.15,
-        pctdistance=0.70,
-    )
-    plt.tight_layout()
-    plt.savefig(out_png, dpi=200)
-    plt.close()
+    d = Drawing(width, height)
+    title_h = 18
+    pad = 14
+    d.add(String(width / 2, height - (title_h - 3), title, textAnchor="middle", fontSize=11))
+
+    if not values or sum(values) <= 0:
+        d.add(String(width / 2, height / 2, "n/a", textAnchor="middle", fontSize=10))
+    else:
+        pie = Pie()
+        avail_w = max(10, width - 2 * pad)
+        avail_h = max(10, height - title_h - 2 * pad)
+        diam = max(10, min(avail_w, avail_h))
+
+        pie.width = diam
+        pie.height = diam
+        pie.x = (width - diam) / 2
+        pie.y = pad + (avail_h - diam) / 2
+        pie.data = values
+        pie.labels = [f"{lab} ({val:.0f}%)" for lab, val in zip(labels, values)]
+
+        # Use side labels to avoid clutter inside slices.
+        pie.sideLabels = 1
+        pie.simpleLabels = 0
+        pie.sideLabelsOffset = 0.16
+        pie.slices.strokeWidth = 0.25
+        pie.slices.fontSize = 11
+        pie.slices.fontName = "Helvetica"
+        pie.slices.fontColor = colors.black
+
+        palette = [
+            colors.darkblue,
+            colors.darkgreen,
+            colors.darkred,
+            colors.purple,
+            colors.darkorange,
+            colors.teal,
+            colors.brown,
+            colors.indigo,
+        ]
+        for i in range(len(values)):
+            pie.slices[i].fillColor = palette[i % len(palette)]
+
+        d.add(pie)
+
+    out_pdf = out_path.with_suffix(".pdf")
+    renderPDF.drawToFile(d, str(out_pdf))
+    return {"pdf": out_pdf, "drawing": d}
 
 
 def opening_paragraph(top_runs, params_by_tag, *, manual_tag: str, manual_run=None):
@@ -177,14 +296,13 @@ def opening_paragraph(top_runs, params_by_tag, *, manual_tag: str, manual_run=No
             speedup = tps / mtps
             manual_clause = (
                 f" Manual baseline <b>{manual_tag}</b> achieved <b>{mtps:.3f} timesteps/s</b> "
-                f"(speedup vs baseline: <b>{speedup:.2f}×</b>)."
+                f"(speedup: <b>{speedup:.2f}×</b>)."
             )
 
     return (
         f"Fastest throughput in this sweep was achieved by <b>{tag}</b> at "
-        f"<b>{tps_s} timesteps/s</b>. "
-        f"Run parameters: kstyle=<b>{ks}</b>. "
-        f"Sweep parameters recorded in params.json: {extra_s}."
+        f"<b>{tps_s} timesteps/s</b>.<br/>"
+        f"Run parameters: kstyle=<b>{ks}</b>; {extra_s}.<br/>"
         f"{manual_clause}"
     )
 
@@ -194,8 +312,9 @@ def build_pdf(
     summary: dict,
     top_runs: list,
     table_runs: list,
-    pie_paths: list[Path],
+    pie_drawings: list[Drawing],
     params_by_tag: dict,
+    runs_dir: Path,
     out_pdf: Path,
     manual_tag: str,
 ):
@@ -231,6 +350,8 @@ def build_pdf(
     if manual_run is not None:
         manual_tps = safe_float((manual_run.get("performance") or {}).get("timesteps_per_s"))
 
+    manual_energy = extract_final_total_energy_from_run(manual_run, runs_dir=runs_dir) if manual_run else None
+
     story.append(
         Paragraph(
             opening_paragraph(top_runs, params_by_tag, manual_tag=manual_tag, manual_run=manual_run),
@@ -241,9 +362,9 @@ def build_pdf(
 
     params_list = [params_by_tag.get(r.get("tag", "unknown"), {}) for r in table_runs]
     param_cols = collect_param_columns(params_list)
-    param_cols = [c for c in param_cols if c != "kacc"]
+    param_cols = [c for c in param_cols if c not in {"kacc", "ks", "dcut"}]
 
-    header = ["Rank", "kacc", "Tag", "timesteps/s", "speedup vs manual", "walltime"] + param_cols
+    header = ["Rank", "kacc", "ks", "dcut", "Tag", "timesteps/s", "speedup", "ΔE%", "walltime"] + param_cols
     rows = [header]
 
     for i, r in enumerate(table_runs, start=1):
@@ -255,17 +376,36 @@ def build_pdf(
         if manual_tps is not None and tps is not None and manual_tps > 0:
             speedup_s = f"{(tps / manual_tps):.2f}x"
 
+        energy_diff_s = "n/a"
+        if manual_energy is not None and manual_energy != 0:
+            sweep_energy = extract_final_total_energy_from_run(r, runs_dir=runs_dir)
+            if sweep_energy is not None:
+                energy_diff_pct = (sweep_energy - manual_energy) / manual_energy * 100.0
+                energy_diff_s = f"{energy_diff_pct:+.3f}%"
+
         walltime = r.get("total_wall_time") or "n/a"
 
         p = params_by_tag.get(tag, {})
         kacc_s = format_param_value(p.get("kacc"))
-        row = [str(i), kacc_s, tag, tps_s, speedup_s, walltime] + [
+        ks_s = format_param_value(p.get("ks") or (r.get("kspace") or {}).get("style"))
+        dcut_s = format_param_value(p.get("dcut"))
+        row = [str(i), kacc_s, ks_s, dcut_s, tag, tps_s, speedup_s, energy_diff_s, walltime] + [
             format_param_value(p.get(k)) for k in param_cols
         ]
         rows.append(row)
 
     page_w = A4[0] - (doc.leftMargin + doc.rightMargin)
-    base_widths = [0.45 * inch, 0.70 * inch, 1.05 * inch, 0.85 * inch, 0.90 * inch, 0.85 * inch]
+    base_widths = [
+        0.45 * inch,  # Rank
+        0.65 * inch,  # kacc
+        0.80 * inch,  # ks
+        0.65 * inch,  # dcut
+        0.95 * inch,  # Tag
+        0.75 * inch,  # timesteps/s
+        0.70 * inch,  # speedup
+        0.75 * inch,  # ΔE%
+        0.80 * inch,  # walltime
+    ]
     remaining = page_w - sum(base_widths)
     extra_w = remaining / max(1, len(param_cols))
     col_widths = base_widths + [extra_w] * len(param_cols)
@@ -280,8 +420,9 @@ def build_pdf(
                 ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
                 ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
                 ("ALIGN", (0, 0), (0, -1), "CENTER"),
-                ("ALIGN", (3, 1), (3, -1), "RIGHT"),
-                ("ALIGN", (4, 1), (4, -1), "RIGHT"),
+                ("ALIGN", (5, 1), (5, -1), "RIGHT"),
+                ("ALIGN", (6, 1), (6, -1), "RIGHT"),
+                ("ALIGN", (7, 1), (7, -1), "RIGHT"),
                 ("LEFTPADDING", (0, 0), (-1, -1), 3),
                 ("RIGHTPADDING", (0, 0), (-1, -1), 3),
                 ("TOPPADDING", (0, 0), (-1, -1), 2),
@@ -289,33 +430,69 @@ def build_pdf(
             ]
         )
     )
-    story.append(tbl)
-    story.append(Spacer(1, 0.12 * inch))
 
-    imgs = []
-    for p in pie_paths:
-        img = Image(str(p))
-        img.drawWidth = 2.35 * inch
-        img.drawHeight = 2.35 * inch
-        imgs.append(img)
-
-    while len(imgs) < 3:
-        imgs.append(Spacer(1, 2.35 * inch))
-
-    pie_tbl = Table([imgs], colWidths=[2.45 * inch, 2.45 * inch, 2.45 * inch])
-    pie_tbl.setStyle(
-        TableStyle(
-            [
-                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                ("LEFTPADDING", (0, 0), (-1, -1), 0),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-                ("TOPPADDING", (0, 0), (-1, -1), 0),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
-            ]
-        )
+    story.append(Paragraph("Overview", styles["Heading2"]))
+    table_desc = (
+    "This table shows the best-performing sweep runs for each value of kacc. "
+    "Runs are ranked by timesteps/s. "
+    "Speedup is relative to the manual baseline run. "
+    "ΔE% is the final total energy difference relative to the manual run. "
     )
-    story.append(pie_tbl)
+    story.append(Paragraph(table_desc, body))
+    story.append(Spacer(1, 0.06 * inch))
+    story.append(tbl)
+    story.append(Spacer(1, 0.10 * inch))
+
+    pie_desc = ("Timing breakdown pie charts for the runs listed in the table (one chart per kacc, titled by rank).")
+    story.append(Paragraph(pie_desc, body))
+    story.append(Spacer(1, 0.06 * inch))
+
+    if pie_drawings:
+        cols = 2
+        pie_page_w = A4[0] - (doc.leftMargin + doc.rightMargin)
+        cell_w = pie_page_w / cols
+        draw_w = cell_w * 0.60
+        draw_h = draw_w
+
+        charts = []
+        for d in pie_drawings:
+            try:
+                sx = draw_w / float(getattr(d, "width", draw_w) or draw_w)
+                sy = draw_h / float(getattr(d, "height", draw_h) or draw_h)
+                s = min(sx, sy)
+            except Exception:
+                s = 1.0
+
+            if s and abs(s - 1.0) > 1e-6:
+                d.scale(s, s)
+                if hasattr(d, "width"):
+                    d.width = float(getattr(d, "width", draw_w)) * s
+                if hasattr(d, "height"):
+                    d.height = float(getattr(d, "height", draw_h)) * s
+
+            charts.append(GraphicsFlowable(d))
+
+        img_rows = []
+        for i in range(0, len(charts), cols):
+            row = charts[i : i + cols]
+            while len(row) < cols:
+                row.append(Spacer(1, draw_h))
+            img_rows.append(row)
+
+        pie_tbl = Table(img_rows, colWidths=[cell_w] * cols)
+        pie_tbl.setStyle(
+            TableStyle(
+                [
+                    ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 14),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 14),
+                    ("TOPPADDING", (0, 0), (-1, -1), 10),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
+                ]
+            )
+        )
+        story.append(pie_tbl)
 
     timed_out = []
     for r in (summary.get("runs") or []):
@@ -330,27 +507,26 @@ def build_pdf(
     if not timed_out:
         story.append(Paragraph("No runs timed out.", body))
     else:
-        to_rows = [["Tag", "timeout_s", "elapsed_s", "returncode", "note"]]
+        to_rows = [["Tag", "ks", "kacc", "dcut"]]
         for r in timed_out:
             tag = r.get("tag", "unknown")
-            runner = r.get("runner") or {}
+            p = params_by_tag.get(tag, {})
+            ks = p.get("ks") or (r.get("kspace") or {}).get("style")
             to_rows.append(
                 [
                     str(tag),
-                    fmt_num(runner.get("timeout_s")),
-                    fmt_num(runner.get("time_s")),
-                    str(runner.get("returncode")) if runner.get("returncode") is not None else "n/a",
-                    str(runner.get("note") or "timeout"),
+                    format_param_value(ks),
+                    format_param_value(p.get("kacc")),
+                    format_param_value(p.get("dcut")),
                 ]
             )
 
         page_w2 = A4[0] - (doc.leftMargin + doc.rightMargin)
         col_widths2 = [
-            1.20 * inch,
-            0.85 * inch,
-            0.85 * inch,
-            0.80 * inch,
-            page_w2 - (1.20 + 0.85 + 0.85 + 0.80) * inch,
+            1.50 * inch,
+            1.00 * inch,
+            1.00 * inch,
+            page_w2 - (1.50 + 1.00 + 1.00) * inch,
         ]
         to_tbl = Table(to_rows, colWidths=col_widths2, hAlign="LEFT")
         to_tbl.setStyle(
@@ -416,20 +592,21 @@ def generate_performance_review(
     tmp_dir = runs_dir / "_report_tmp"
     tmp_dir.mkdir(parents=True, exist_ok=True)
 
-    pie_paths: list[Path] = []
-    for i, r in enumerate(top_runs, start=1):
+    pie_drawings: list[Drawing] = []
+    for i, r in enumerate(table_runs, start=1):
         tag = r.get("tag", "unknown")
-        p = tmp_dir / f"pie_{i}_{tag}.png"
-        make_timing_pie(r, p, merge_lt_pct=merge_lt_pct)
-        pie_paths.append(p)
+        base = tmp_dir / f"pie_{i:02d}_{tag}"
+        outs = make_timing_pie(r, base, merge_lt_pct=merge_lt_pct, title=f"Rank {i}")
+        pie_drawings.append(outs["drawing"])
 
     out_pdf.parent.mkdir(parents=True, exist_ok=True)
     build_pdf(
         summary=summary,
         top_runs=top_runs,
         table_runs=table_runs,
-        pie_paths=pie_paths,
+        pie_drawings=pie_drawings,
         params_by_tag=params_by_tag,
+        runs_dir=runs_dir,
         out_pdf=out_pdf,
         manual_tag=manual_tag,
     )
