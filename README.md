@@ -123,15 +123,7 @@ bash verify.sh
 
 ---
 
-## How to run everything (end-to-end)
-
-From the repo root:
-
-```bash
-source .venv/bin/activate
-python collect_metrics.py
-python plot_metrics.py
-```
+## How to run everything
 
 Tip: see all options with:
 
@@ -139,6 +131,14 @@ Tip: see all options with:
 python collect_metrics.py --help
 python scaling_analysis.py --help
 ```
+
+From the repo root and within the virtual environment:
+```bash
+python collect_metrics.py
+python plot_metrics.py
+```
+
+
 
 This will:
 
