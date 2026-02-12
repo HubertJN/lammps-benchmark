@@ -11,9 +11,13 @@ MANUAL_INP = "in.manual.lmp"
 MANUAL_TAG = "manual"
 
 MAX_PARALLEL = int(os.environ.get("MAX_PARALLEL", "8"))
-RUN_TIMEOUT_S = float(os.environ.get("RUN_TIMEOUT_S", "1800")) # X minutes per run
-if RUN_TIMEOUT_S <= 0:
-    RUN_TIMEOUT_S = None
+TIMEOUT_PADDING_S = float(os.environ.get("TIMEOUT_PADDING_S", "300"))  # add 5 minutes by default
+if TIMEOUT_PADDING_S < 0:
+    TIMEOUT_PADDING_S = 0.0
+
+FALLBACK_TIMEOUT_S = float(os.environ.get("RUN_TIMEOUT_S", "1800"))  # used only if manual timing unavailable
+if FALLBACK_TIMEOUT_S <= 0:
+    FALLBACK_TIMEOUT_S = None
 
 # Sweep over kspace styles directly.
 SWEEP = {
@@ -79,10 +83,24 @@ if __name__ == "__main__":
     include_manual = ["case", "input", "lmp"]
     manual_sig = canonical_params(manual_params, include_keys=include_manual)
     existing_manual = index_existing_runs(runs_dir, run_glob=MANUAL_TAG, include_keys=include_manual).get(manual_sig)
+    manual_time_s = None
 
     if existing_manual == MANUAL_TAG and run_complete(manual_dir):
-        print(f"SKIP: {MANUAL_TAG} existing params match input={MANUAL_INP}")
-    else:
+        recorded = read_json(manual_dir / "run_result.json")
+        recorded_time = recorded.get("time_s")
+        if isinstance(recorded_time, (int, float)) and recorded_time > 0:
+            manual_time_s = float(recorded_time)
+            print(
+                f"SKIP: {MANUAL_TAG} existing params match input={MANUAL_INP} "
+                f"(using recorded time={manual_time_s:.2f}s)"
+            )
+        else:
+            print(
+                f"INFO: {MANUAL_TAG} exists but has no usable recorded runtime; "
+                f"re-running to derive timeout"
+            )
+
+    if manual_time_s is None:
         manual_res = run_lammps_job(
             {
                 "run_id": MANUAL_TAG,
@@ -94,14 +112,29 @@ if __name__ == "__main__":
                 "params": manual_params,
                 "meta": {},
                 "suppress_output": True,
-                "timeout_s": RUN_TIMEOUT_S,
+                "timeout_s": None,
             }
         )
         if manual_res.get("timed_out"):
-            manual_status = f"TIMEOUT({RUN_TIMEOUT_S}s)"
+            manual_status = f"TIMEOUT({manual_res.get('timeout_s')}s)"
         else:
             manual_status = "OK" if manual_res["returncode"] == 0 else f"FAIL(rc={manual_res['returncode']})"
         print(f"DONE: {manual_res['run_id']} {manual_status} time={manual_res['time_s']:.2f}s input={MANUAL_INP}")
+        if manual_res["returncode"] == 0 and not manual_res.get("timed_out"):
+            manual_time_s = float(manual_res["time_s"])
+
+    if manual_time_s is not None:
+        sweep_timeout_s = manual_time_s + TIMEOUT_PADDING_S
+        print(
+            f"INFO: sweep timeout set from manual runtime: "
+            f"{manual_time_s:.2f}s + {TIMEOUT_PADDING_S:.0f}s = {sweep_timeout_s:.2f}s"
+        )
+    else:
+        sweep_timeout_s = FALLBACK_TIMEOUT_S
+        print(
+            f"WARNING: could not derive timeout from manual run; "
+            f"using fallback RUN_TIMEOUT_S={sweep_timeout_s}"
+        )
 
     for run_id, ks, combo_dict in skipped:
         print(
@@ -126,7 +159,7 @@ if __name__ == "__main__":
                 "params": params,
                 "meta": {"ks": ks, **combo_dict},
                 "suppress_output": True,
-                "timeout_s": RUN_TIMEOUT_S,
+                "timeout_s": sweep_timeout_s,
             }
         )
 
@@ -134,7 +167,7 @@ if __name__ == "__main__":
         with Pool(processes=MAX_PARALLEL) as pool:
             for res in pool.imap_unordered(run_lammps_job, sweep_jobs):
                 if res.get("timed_out"):
-                    status = f"TIMEOUT({RUN_TIMEOUT_S}s)"
+                    status = f"TIMEOUT({sweep_timeout_s}s)"
                 else:
                     status = "OK" if res["returncode"] == 0 else f"FAIL(rc={res['returncode']})"
                 print(
