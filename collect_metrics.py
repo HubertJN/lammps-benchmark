@@ -1,3 +1,4 @@
+import math
 import os
 from itertools import product
 from multiprocessing import Pool
@@ -124,10 +125,12 @@ if __name__ == "__main__":
             manual_time_s = float(manual_res["time_s"])
 
     if manual_time_s is not None:
-        sweep_timeout_s = manual_time_s + TIMEOUT_PADDING_S
+        rounded_manual_s = math.ceil(float(manual_time_s) / 60.0) * 60.0
+        sweep_timeout_s = rounded_manual_s + TIMEOUT_PADDING_S
         print(
             f"INFO: sweep timeout set from manual runtime: "
-            f"{manual_time_s:.2f}s + {TIMEOUT_PADDING_S:.0f}s = {sweep_timeout_s:.2f}s"
+            f"ceil({manual_time_s:.2f}s to nearest minute)={rounded_manual_s:.2f}s "
+            f"+ {TIMEOUT_PADDING_S:.0f}s = {sweep_timeout_s:.2f}s"
         )
     else:
         sweep_timeout_s = FALLBACK_TIMEOUT_S
