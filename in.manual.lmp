@@ -206,6 +206,6 @@ undump            snap_equil
 fix thermo_print_prod all print ${thermofreq} "${varstep} ${varetotal}" append ${outdir}/prod_npart_${npart}_rho_${rho}_mu_${mudipole}_tprod_${timeprodunit}.thermo.txt title "step total_energy" screen no
 dump snap_prod all xyz ${dumpfreq} ${outdir}/prod_npart_${npart}_rho_${rho}_mu_${mudipole}_tprod_${timeprodunit}.xyz       # 4th argument is time separation between frames
 dump_modify       snap_prod element A B C D E
-run               100 #${timeprod}
+run               1000 #${timeprod}
 unfix             thermo_print_prod
 undump            snap_prod
