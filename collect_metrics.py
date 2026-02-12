@@ -167,7 +167,7 @@ if __name__ == "__main__":
         with Pool(processes=MAX_PARALLEL) as pool:
             for res in pool.imap_unordered(run_lammps_job, sweep_jobs):
                 if res.get("timed_out"):
-                    status = f"TIMEOUT({sweep_timeout_s}s)"
+                    status = f"TIMEOUT({float(sweep_timeout_s):.2f}s)"
                 else:
                     status = "OK" if res["returncode"] == 0 else f"FAIL(rc={res['returncode']})"
                 print(
