@@ -98,9 +98,7 @@ cmake -S mylammps/cmake -B mylammps/build \
   -D CMAKE_BUILD_TYPE=Release \
   -D BUILD_SHARED_LIBS=ON \
   -D PKG_KOKKOS=ON \
-  -D Kokkos_ENABLE_CUDA=ON \
   -D Kokkos_ENABLE_OPENMP=ON \
-  -D Kokkos_ARCH_AMPERE86=ON \
   -D PKG_DIPOLE=ON \
   -D PKG_KSPACE=ON \
   -D CMAKE_BUILD_WITH_INSTALL_RPATH=ON \
@@ -109,7 +107,8 @@ cmake -S mylammps/cmake -B mylammps/build \
 
 ```
 
-Once configuration finishes, compile with (manually set cores):
+Once configuration finishes, compile with:<br>
+(<b>Make sure to manually set cores)</b>
 ```
 cmake --build mylammps/build -j cores
 ```
