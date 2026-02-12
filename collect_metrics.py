@@ -51,40 +51,28 @@ def _normalize_sweep_params(params: dict, sweep_keys: list[str]) -> None:
 def main(argv: list[str] | None = None) -> int:
     env_max_parallel = int(os.environ.get("MAX_PARALLEL", "4"))
     env_timeout_padding_s = float(os.environ.get("TIMEOUT_PADDING_S", "300"))
-    if env_timeout_padding_s < 0:
-        env_timeout_padding_s = 0.0
 
     env_fallback_timeout_s = float(os.environ.get("RUN_TIMEOUT_S", "1800"))
     if env_fallback_timeout_s <= 0:
         env_fallback_timeout_s = None
 
-    ap = argparse.ArgumentParser(description="Run LAMMPS benchmark sweep, collect logs, and write benchmark_summary.json")
+    ap = argparse.ArgumentParser(
+        description="Run LAMMPS benchmark sweep, collect logs, and write benchmark_summary.json",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
     ap.add_argument("--runs-dir", default="runs", help="Directory containing run_* folders")
     ap.add_argument("--lmp", default=DEFAULT_LMP, help="Path to LAMMPS executable")
     ap.add_argument("--input", default=DEFAULT_INPUT, help="LAMMPS input script for sweep runs")
     ap.add_argument("--manual-input", default=DEFAULT_MANUAL_INPUT, help="LAMMPS input script for manual baseline")
     ap.add_argument("--manual-tag", default=DEFAULT_MANUAL_TAG, help="Run directory tag for manual baseline")
     ap.add_argument("--max-parallel", type=int, default=env_max_parallel, help="Max parallel LAMMPS runs")
-    ap.add_argument(
-        "--timeout-padding-s",
-        type=float,
-        default=env_timeout_padding_s,
-        help="Extra seconds added to derived timeout from manual runtime",
-    )
-    ap.add_argument(
-        "--fallback-timeout-s",
-        type=float,
-        default=env_fallback_timeout_s,
-        help="Timeout used if manual runtime unavailable (<=0 disables timeout)",
-    )
+    ap.add_argument("--timeout-padding-s", type=float, default=env_timeout_padding_s, help="Extra seconds added to derived timeout from manual runtime")
+    ap.add_argument("--fallback-timeout-s", type=float, default=env_fallback_timeout_s, help="Timeout used if manual runtime unavailable (<=0 disables timeout)")
     ap.add_argument("--ks", default=",".join(DEFAULT_SWEEP["ks"]), help="Comma-separated kspace styles")
     ap.add_argument("--kacc", default=",".join(DEFAULT_SWEEP["kacc"]), help="Comma-separated kspace accuracies")
-    ap.add_argument(
-        "--dcut",
-        default=",".join(str(x) for x in DEFAULT_SWEEP["dcut"]),
-        help="Comma-separated dcut values",
-    )
+    ap.add_argument("--dcut", default=",".join(str(x) for x in DEFAULT_SWEEP["dcut"]), help="Comma-separated dcut values")
     args = ap.parse_args(argv)
+
 
     runs_dir = Path(args.runs_dir)
     runs_dir.mkdir(parents=True, exist_ok=True)
@@ -96,8 +84,7 @@ def main(argv: list[str] | None = None) -> int:
 
     max_parallel = int(args.max_parallel)
     timeout_padding_s = float(args.timeout_padding_s)
-    if timeout_padding_s < 0:
-        timeout_padding_s = 0.0
+
 
     fallback_timeout_s = args.fallback_timeout_s
     if fallback_timeout_s is not None:
@@ -238,7 +225,8 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     if sweep_jobs:
-        with Pool(processes=max_parallel) as pool:
+        n_procs = min(max_parallel, len(sweep_jobs))
+        with Pool(processes=n_procs) as pool:
             for res in pool.imap_unordered(run_lammps_job, sweep_jobs):
                 if res.get("timed_out"):
                     status = f"TIMEOUT({float(sweep_timeout_s):.2f}s)"
