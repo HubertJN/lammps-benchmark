@@ -11,11 +11,13 @@ This is a personal project that started as me tuning an input script (for myself
   - `dcut` (dipole cutoff)
 - Parses logs and writes a consolidated summary JSON
 - Builds a PDF report with ranked runs, speedups, timing pies, and timeout table
+- Generates Slurm **scaling run scripts** (and optionally submits them), writing a `scaling_summary.json`
 
 Main scripts:
 
-- `collect_metrics.py` → executes manual + sweep runs and writes `runs/benchmark_summary.json`
-- `plot_metrics.py` → generates `runs/performance_review.pdf`
+- `collect_metrics.py` -> executes manual + sweep runs and writes `runs/benchmark_summary.json`
+- `plot_metrics.py` -> generates `runs/performance_review.pdf`
+- `scaling_analysis.py` -> generates (and optionally submits) scaling `job.slurm` scripts under a chosen output directory
 
 ---
 
@@ -71,14 +73,28 @@ python -m pip install reportlab
 
 ### 3) Build LAMMPS (example GPU/KOKKOS configuration)
 
-This repo expects the LAMMPS executable at:
+This repo expects the LAMMPS source tree to live at:
+
+`mylammps/`
+
+and the built executable at:
 
 `mylammps/build/lmp`
 
-Example build (from your LAMMPS source tree):
+#### Download LAMMPS into `mylammps/`
+
+From the repo root:
 
 ```bash
-cmake -S cmake -B build \
+git clone -b release https://github.com/lammps/lammps.git mylammps
+```
+
+#### Configure + build
+
+From the repo root (make sure to select number of cores to use during compile):
+
+```bash
+cmake -S mylammps/cmake -B mylammps/build \
   -D CMAKE_BUILD_TYPE=Release \
   -D BUILD_SHARED_LIBS=ON \
   -D PKG_KOKKOS=ON \
@@ -91,10 +107,10 @@ cmake -S cmake -B build \
   -D CMAKE_INSTALL_RPATH='$ORIGIN' \
   -D CMAKE_INSTALL_RPATH_USE_LINK_PATH=OFF
 
-cmake --build build -j 8
+cmake --build mylammps/build -j [num_cores]
 ```
 
-If your binary is somewhere else, update `LMP` inside `collect_metrics.py`.
+If your binary is somewhere else, pass `--lmp /path/to/lmp` to `collect_metrics.py`.
 
 ### 4) Verify the binary has required packages
 
@@ -114,6 +130,13 @@ python collect_metrics.py
 python plot_metrics.py
 ```
 
+Tip: see all options with:
+
+```bash
+python collect_metrics.py --help
+python scaling_analysis.py --help
+```
+
 This will:
 
 1. Run manual baseline (`runs/manual`)
@@ -127,25 +150,51 @@ This will:
 
 You can control runner behavior with environment variables:
 
-- `MAX_PARALLEL` (default `8`): number of parallel sweep workers
+- `MAX_PARALLEL` (default `4`): number of parallel sweep workers
 - `TIMEOUT_PADDING_S` (default `300`): extra timeout added to manual baseline runtime
 - `RUN_TIMEOUT_S` (default `1800`): fallback timeout if manual runtime is unavailable
 
 Example:
 
 ```bash
-MAX_PARALLEL=4 TIMEOUT_PADDING_S=180 RUN_TIMEOUT_S=1200 python collect_metrics.py
+MAX_PARALLEL=2 TIMEOUT_PADDING_S=180 RUN_TIMEOUT_S=1200 python collect_metrics.py
 ```
 
 ---
 
 ## Outputs
 
-- `runs/manual/` → manual baseline run artifacts
-- `runs/run_*/` → sweep run artifacts (`params.json`, `lammps.log`, `run_result.json`)
-- `runs/logs/*.log` → consolidated log copies
-- `runs/benchmark_summary.json` → parsed machine + run metrics
-- `runs/performance_review.pdf` → final benchmark report
+- `runs/manual/` -> manual baseline run artifacts
+- `runs/run_*/` -> sweep run artifacts (`params.json`, `lammps.log`, `run_result.json`)
+- `runs/logs/*.log` -> consolidated log copies
+- `runs/benchmark_summary.json` -> parsed machine + run metrics
+- `runs/performance_review.pdf` -> final benchmark report
+
+Scaling (Slurm script generation):
+
+- `runs/scaling_*/` -> generated scaling jobs (`job.slurm`, `params.json`)
+- `runs/scaling_*/scaling_summary.json` -> machine + slurm config + list of generated scaling jobs
+- `runs/scaling_*/submit_result.json` -> `sbatch` output (only when `--submit`)
+
+---
+
+## Scaling runs (Slurm)
+
+1) Edit `slurm_config.yaml` for your cluster (`ACCOUNT`, `CORES_PER_NODE`, `PARTITION`, `TIME_LIMIT`).
+
+2) Generate scripts (no submit):
+
+```bash
+python scaling_analysis.py --runs-dir runs/scaling
+```
+
+3) Generate + submit:
+
+```bash
+python scaling_analysis.py --runs-dir runs/scaling --submit
+```
+
+After submission, it will optionally prompt you to monitor jobs using `squeue`.
 
 ---
 
