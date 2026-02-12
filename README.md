@@ -91,7 +91,7 @@ git clone -b release https://github.com/lammps/lammps.git mylammps
 
 #### Configure + build
 
-From the repo root (make sure to select number of cores to use during compile):
+From the repo root:
 
 ```bash
 cmake -S mylammps/cmake -B mylammps/build \
@@ -107,7 +107,11 @@ cmake -S mylammps/cmake -B mylammps/build \
   -D CMAKE_INSTALL_RPATH='$ORIGIN' \
   -D CMAKE_INSTALL_RPATH_USE_LINK_PATH=OFF
 
-cmake --build mylammps/build -j [num_cores]
+```
+
+Once configuration finishes, compile with (manually set cores):
+```
+cmake --build mylammps/build -j cores
 ```
 
 If your binary is somewhere else, pass `--lmp /path/to/lmp` to `collect_metrics.py`.
