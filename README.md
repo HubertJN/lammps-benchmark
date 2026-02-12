@@ -1,29 +1,83 @@
-# LAMMPS (KOKKOS + CUDA + OpenMP) build for NVIDIA RTX A2000 with Python support
+# LAMMPS benchmark, parameter sweep and report generator
 
-These instructions build LAMMPS from source with:
-- KOKKOS acceleration
-- CUDA GPU support
-- OpenMP CPU threading
-- NVIDIA RTX A2000 (Ampere, compute capability 8.6)
-- Shared library + Python module install into a virtual environment
-- (Optional, for dipole scripts) DIPOLE + KSPACE packages
+This is a personal project that started as me tuning an input script (for myself and for collaborator workflows), and then grew into a full automation suite: run a manual baseline, sweep key simulation parameters, collect parsed metrics, and generate a final PDF performance report.
 
-## Prerequisites
+## What this project does
 
-- NVIDIA driver installed and working
-- CUDA toolkit installed (compatible with your driver)
-- A C++ compiler (e.g., gcc/g++)
+- Runs a **manual baseline** (`in.manual.lmp`)
+- Runs an automated **parameter sweep** (`in.performance_test.lmp`) across:
+  - `ks` (kspace style)
+  - `kacc` (kspace accuracy)
+  - `dcut` (dipole cutoff)
+- Parses logs and writes a consolidated summary JSON
+- Builds a PDF report with ranked runs, speedups, timing pies, and timeout table
+
+Main scripts:
+
+- `collect_metrics.py` → executes manual + sweep runs and writes `runs/benchmark_summary.json`
+- `plot_metrics.py` → generates `runs/performance_review.pdf`
+
+---
+
+## Requirements
+
+### System / build tools
+
+- Linux
+- Python 3.10+ (with `venv` and `pip`)
 - CMake
-- Python 3 + venv
+- C++ compiler toolchain (e.g. `gcc/g++`)
+- NVIDIA driver + CUDA toolkit (for GPU KOKKOS build)
 
-Verify CUDA is available:
+### LAMMPS packages/features required
+
+Your `lmp` binary should be built with:
+
+- `KOKKOS`
+- `CUDA`
+- `OPENMP`
+- `DIPOLE`
+- `KSPACE`
+
+### Python packages required
+
+- `reportlab`
+
+Install with:
+
 ```bash
-nvidia-smi
-nvcc --version
+python3 -m pip install reportlab
 ```
 
-## Configure
+---
+
+## Installation
+
+### 1) Clone this repository
+
+```bash
+git clone git@github.com:HubertJN/lammps-benchmark.git
+cd lammps-benchmark
 ```
+
+### 2) Create and activate a virtual environment
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install reportlab
+```
+
+### 3) Build LAMMPS (example GPU/KOKKOS configuration)
+
+This repo expects the LAMMPS executable at:
+
+`mylammps/build/lmp`
+
+Example build (from your LAMMPS source tree):
+
+```bash
 cmake -S cmake -B build \
   -D CMAKE_BUILD_TYPE=Release \
   -D BUILD_SHARED_LIBS=ON \
@@ -36,27 +90,67 @@ cmake -S cmake -B build \
   -D CMAKE_BUILD_WITH_INSTALL_RPATH=ON \
   -D CMAKE_INSTALL_RPATH='$ORIGIN' \
   -D CMAKE_INSTALL_RPATH_USE_LINK_PATH=OFF
-```
-## Build
 
-```
-cmake --build build -j [Number of Cores]
+cmake --build build -j 8
 ```
 
-## Install the LAMMPS Python module into the active venv
+If your binary is somewhere else, update `LMP` inside `collect_metrics.py`.
 
-```
-cmake --build build --target install-python
-```
+### 4) Verify the binary has required packages
 
-## Verify build
-
-```
+```bash
 bash verify.sh
 ```
 
-## Run LAMMPS with basic script
+---
 
+## How to run everything (end-to-end)
+
+From the repo root:
+
+```bash
+source .venv/bin/activate
+python collect_metrics.py
+python plot_metrics.py
 ```
-mylammps/build/lmp -in in.FivesNoRescaleDipolarWCAFrancescoLangevinE.lmp
+
+This will:
+
+1. Run manual baseline (`runs/manual`)
+2. Run sweep cases (`runs/run_*`)
+3. Parse logs into `runs/benchmark_summary.json`
+4. Generate report at `runs/performance_review.pdf`
+
+---
+
+## Runtime tuning knobs (optional)
+
+You can control runner behavior with environment variables:
+
+- `MAX_PARALLEL` (default `8`): number of parallel sweep workers
+- `TIMEOUT_PADDING_S` (default `300`): extra timeout added to manual baseline runtime
+- `RUN_TIMEOUT_S` (default `1800`): fallback timeout if manual runtime is unavailable
+
+Example:
+
+```bash
+MAX_PARALLEL=4 TIMEOUT_PADDING_S=180 RUN_TIMEOUT_S=1200 python collect_metrics.py
 ```
+
+---
+
+## Outputs
+
+- `runs/manual/` → manual baseline run artifacts
+- `runs/run_*/` → sweep run artifacts (`params.json`, `lammps.log`, `run_result.json`)
+- `runs/logs/*.log` → consolidated log copies
+- `runs/benchmark_summary.json` → parsed machine + run metrics
+- `runs/performance_review.pdf` → final benchmark report
+
+---
+
+## Notes
+
+- Sweep dimensions are defined in `SWEEP` in `collect_metrics.py`.
+- The sweep input script consumes runtime variables (`ks`, `kacc`, `dcut`) via `-var`.
+- Existing successful runs are reused/skipped to avoid rerunning identical parameter sets.
