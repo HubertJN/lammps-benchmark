@@ -1,0 +1,4 @@
+ACCOUNT: "your_account"         # Slurm account / project code
+CORES_PER_NODE: 16 # Number of CPU cores per node
+PARTITION: "your_partition" # Slurm partition to submit jobs to 
+TIME_LIMIT: "00:30:00" # Time limit for each job (HH:MM:SS)
