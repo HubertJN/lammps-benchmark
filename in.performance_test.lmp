@@ -73,7 +73,7 @@ variable          mudipole55    equal   ${mudipole}#*${sigma55}*${sigma55}*${sig
 
 
 
-variable          timestep      equal   0.00175 # 0.00125
+variable          timestep      equal   0.002 # 0.00125
 variable          timeequilunit equal   200                                   # equil time time units
 variable          timeprodunit  equal   100                                   # prod time time units
 variable          timeequil     equal   round(${timeequilunit}/${timestep})    # in units of timesteps  -- but scale
