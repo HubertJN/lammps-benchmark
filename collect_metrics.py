@@ -29,7 +29,6 @@ DEFAULT_SWEEP = {
     "ks": [
         "ewald_dipole",
         "pppm_dipole",
-        "ewald_disp",
     ],
     "kacc": ["1.0e-3", "1.0e-4", "1.0e-5", "1.0e-6"],
     "dcut": [4, 5, 6, 7, 8, 9, 10],
