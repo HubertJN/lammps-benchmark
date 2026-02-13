@@ -131,6 +131,17 @@ If your binary is somewhere else, pass `--lmp /path/to/lmp` to `collect_metrics.
 bash verify.sh
 ```
 
+### 5) Set runtime controls
+
+```
+export OMP_NUM_THREADS=1
+export OMP_PROC_BIND=true
+export OMP_PLACES=threads
+export FFTW_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+export OPENBLAS_NUM_THREADS=1
+```
+
 ---
 
 ## How to run everything
