@@ -211,6 +211,7 @@ def generate_slurm_scripts(
         lmp_path, inp_path = _extract_lammps_paths(lammps_cmd)
 
         slurm_script = slurm_template.format(
+            run_dir=str(run_dir),
             nodes=nodes,
             ntasks_per_node=ntasks_per_node,
             partition=partition,
