@@ -21,6 +21,8 @@ DEFAULT_LMP = "mylammps/build/lmp"
 DEFAULT_INPUT = "in.performance_test.lmp"
 DEFAULT_MANUAL_INPUT = "in.manual.lmp"
 DEFAULT_MANUAL_TAG = "manual"
+DEFAULT_MAX_PARALLEL = "4"
+DEFAULT_TIMEOUT_PADDING_S =  "300"
 
 
 DEFAULT_SWEEP = {
@@ -49,13 +51,6 @@ def _normalize_sweep_params(params: dict, sweep_keys: list[str]) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    env_max_parallel = int(os.environ.get("MAX_PARALLEL", "4"))
-    env_timeout_padding_s = float(os.environ.get("TIMEOUT_PADDING_S", "300"))
-
-    env_fallback_timeout_s = float(os.environ.get("RUN_TIMEOUT_S", "1800"))
-    if env_fallback_timeout_s <= 0:
-        env_fallback_timeout_s = None
-
     ap = argparse.ArgumentParser(
         description="Run LAMMPS benchmark sweep, collect logs, and write benchmark_summary.json",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -65,8 +60,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--input", default=DEFAULT_INPUT, help="LAMMPS input script for sweep runs")
     ap.add_argument("--manual-input", default=DEFAULT_MANUAL_INPUT, help="LAMMPS input script for manual baseline")
     ap.add_argument("--manual-tag", default=DEFAULT_MANUAL_TAG, help="Run directory tag for manual baseline")
-    ap.add_argument("--max-parallel", type=int, default=env_max_parallel, help="Max parallel LAMMPS runs")
-    ap.add_argument("--timeout-padding-s", type=float, default=env_timeout_padding_s, help="Extra seconds added to derived timeout from manual runtime")
+    ap.add_argument("--max-parallel", type=int, default=DEFAULT_MAX_PARALLEL, help="Max parallel LAMMPS runs")
+    ap.add_argument("--timeout-padding-s", type=float, default=DEFAULT_TIMEOUT_PADDING_S, help="Extra seconds added to derived timeout from manual runtime")
     ap.add_argument("--ks", default=",".join(DEFAULT_SWEEP["ks"]), help="Comma-separated kspace styles")
     ap.add_argument("--kacc", default=",".join(DEFAULT_SWEEP["kacc"]), help="Comma-separated kspace accuracies")
     ap.add_argument("--dcut", default=",".join(str(x) for x in DEFAULT_SWEEP["dcut"]), help="Comma-separated dcut values")
