@@ -149,22 +149,6 @@ This will:
 
 ---
 
-## Runtime tuning knobs (optional)
-
-You can control runner behavior with environment variables:
-
-- `MAX_PARALLEL` (default `4`): number of parallel sweep workers
-- `TIMEOUT_PADDING_S` (default `300`): extra timeout added to manual baseline runtime
-- `RUN_TIMEOUT_S` (default `1800`): fallback timeout if manual runtime is unavailable
-
-Example:
-
-```bash
-MAX_PARALLEL=2 TIMEOUT_PADDING_S=180 RUN_TIMEOUT_S=1200 python collect_metrics.py
-```
-
----
-
 ## Outputs
 
 - `runs/manual/` -> manual baseline run artifacts
