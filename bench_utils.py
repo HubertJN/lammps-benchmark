@@ -379,7 +379,7 @@ def run_lammps_job(job: Dict[str, Any]) -> Dict[str, Any]:
     vars_dict = job.get("vars") or {}
     tag = job.get("tag", run_id)
 
-    cmd = [lmp, "-in", inp, "-var", "tag", str(tag), "-log", str(log_path)]
+    cmd = [lmp, "-k", "on", "t", "1", "-sf", "kk", "-in", inp, "-var", "tag", str(tag), "-log", str(log_path)]
     for k, v in vars_dict.items():
         cmd += ["-var", str(k), str(v)]
 

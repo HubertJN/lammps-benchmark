@@ -19,7 +19,7 @@ PARAMS = {
 }
 
 LAMMPS_COMMAND_TEMPLATE = (
-    "mylammps/build/lmp -in in.performance_test.lmp "
+    "mylammps/build/lmp -k on t 1 -sf kk -in in.performance_test.lmp "
     "-var ks {ks} "
     "-var kacc {kacc} "
     "-var dcut {dcut} "
@@ -29,7 +29,7 @@ LAMMPS_COMMAND_TEMPLATE = (
 
 SLURM_TEMPLATE = """#!/bin/bash
 
-#SBATCH --output={run_dir}/slurm-%j.out
+#SBATCH --output={log_dir}/slurm-%j.out
 #SBATCH --nodes={nodes}
 #SBATCH --ntasks-per-node={ntasks_per_node}
 #SBATCH --cpus-per-task=1
@@ -41,7 +41,7 @@ SLURM_TEMPLATE = """#!/bin/bash
 module purge
 module load GCC/13.2.0 OpenMPI/4.1.6 CUDA/12.9.0 IPython FFTW
 
-srun {lammps_cmd} -k on -t 1 -sf kk
+srun -n "$SLURM_NTASKS" {lammps_cmd}
 """
 
 
