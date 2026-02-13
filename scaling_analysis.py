@@ -14,7 +14,7 @@ from scaling_utils import (
 PARAMS = {
     "ks": ["pppm_dipole"],
     "kacc": ["1.0e-4"],
-    "dcut": [7],
+    "dcut": [6],
     "cores": [1, 2, 4, 8, 16, 32, 48],
 }
 
