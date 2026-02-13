@@ -41,6 +41,13 @@ SLURM_TEMPLATE = """#!/bin/bash
 module purge
 module load GCC/13.2.0 OpenMPI/4.1.6 IPython FFTW
 
+export OMP_NUM_THREADS=1
+export OMP_PROC_BIND=true
+export OMP_PLACES=threads
+export FFTW_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+export OPENBLAS_NUM_THREADS=1
+
 srun {lammps_cmd}
 """
 
