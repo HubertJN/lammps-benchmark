@@ -15,7 +15,7 @@ PARAMS = {
     "ks": ["pppm_dipole"],
     "kacc": ["1.0e-4"],
     "dcut": [7],
-    "cores": [1, 2, 4, 8, 16, 32, 64, 128],
+    "cores": [1, 2, 4, 8, 16, 32, 48],
 }
 
 LAMMPS_COMMAND_TEMPLATE = (
@@ -41,7 +41,7 @@ SLURM_TEMPLATE = """#!/bin/bash
 module purge
 module load GCC/13.2.0 OpenMPI/4.1.6 CUDA/12.9.0 IPython FFTW
 
-srun -n "$SLURM_NTASKS" {lammps_cmd}
+srun {lammps_cmd}
 """
 
 
