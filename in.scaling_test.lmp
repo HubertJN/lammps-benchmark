@@ -157,7 +157,7 @@ if "${ks} == ewald_dipole"      then "kspace_style ewald/dipole ${kacc}"
 if "${ks} == pppm_dipole"       then "kspace_style pppm/dipole  ${kacc}"
 if "${ks} == ewald_disp" then "kspace_style ewald/disp ${kacc}"
 
-minimize 	      1e-1 1e-1 3000 3000			               # quick energy minimization so that no overlaps
+minimize 	      1e-2 1e-2 3000 3000			               # quick energy minimization so that no overlaps
 
 
 #-------------------------- Initialisation ------------------------------------#
