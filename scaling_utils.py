@@ -111,7 +111,7 @@ def monitor_slurm_jobs_interactive() -> None:
 
     default_user = os.environ.get("USER") or ""
     try:
-        entered = input(f"Slurm username to monitor [{default_user}]: ").strip()
+        entered = input(f"Slurm username to monitor (CTRL + C to stop monitoring) [{default_user}]: ").strip()
     except (EOFError, KeyboardInterrupt):
         return
 
@@ -120,9 +120,10 @@ def monitor_slurm_jobs_interactive() -> None:
         print("INFO: No username provided; skipping monitoring.")
         return
 
-    print(f"\n--- squeue -u {username} ---")
-    subprocess.run([squeue, "-u", username], check=False)
-    print("--- end squeue ---\n")
+    try:
+        subprocess.run(["watch", "squeue", "-u", username], check=False)
+    except KeyboardInterrupt:
+        print("\n--- watch interrupted (Ctrl+C) ---\n")
 
 
 def _write_json(path: Path, payload: dict) -> None:
