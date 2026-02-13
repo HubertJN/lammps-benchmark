@@ -78,15 +78,6 @@ def main(argv: list[str] | None = None) -> int:
     max_parallel = int(args.max_parallel)
     timeout_padding_s = float(args.timeout_padding_s)
 
-    fallback_timeout_s = args.fallback_timeout_s
-    if fallback_timeout_s is not None:
-        try:
-            fallback_timeout_s = float(fallback_timeout_s)
-        except Exception:
-            fallback_timeout_s = None
-    if isinstance(fallback_timeout_s, (int, float)) and fallback_timeout_s <= 0:
-        fallback_timeout_s = None
-
     sweep = {
         "ks": parse_csv(args.ks),
         "kacc": parse_csv(args.kacc),
@@ -174,20 +165,13 @@ def main(argv: list[str] | None = None) -> int:
         if manual_res["returncode"] == 0 and not manual_res.get("timed_out"):
             manual_time_s = float(manual_res["time_s"])
 
-    if manual_time_s is not None:
-        rounded_manual_s = math.ceil(float(manual_time_s) / 60.0) * 60.0
-        sweep_timeout_s = rounded_manual_s + timeout_padding_s
-        print(
-            f"INFO: sweep timeout set from manual runtime: "
-            f"ceil({manual_time_s:.2f}s to nearest minute)={rounded_manual_s:.2f}s "
-            f"+ {timeout_padding_s:.0f}s = {sweep_timeout_s:.2f}s"
-        )
-    else:
-        sweep_timeout_s = fallback_timeout_s
-        print(
-            f"WARNING: could not derive timeout from manual run; "
-            f"using fallback timeout={sweep_timeout_s}"
-        )
+    rounded_manual_s = math.ceil(float(manual_time_s) / 60.0) * 60.0
+    sweep_timeout_s = rounded_manual_s + timeout_padding_s
+    print(
+        f"INFO: sweep timeout set from manual runtime: "
+        f"ceil({manual_time_s:.2f}s to nearest minute)={rounded_manual_s:.2f}s "
+        f"+ {timeout_padding_s:.0f}s = {sweep_timeout_s:.2f}s"
+    )
 
     for run_id, ks, combo_dict in skipped:
         print(
