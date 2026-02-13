@@ -48,7 +48,7 @@ export FFTW_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
 
-srun {lammps_cmd}
+srun --cpu-bind=cores {lammps_cmd}
 """
 
 
