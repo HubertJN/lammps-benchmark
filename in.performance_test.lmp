@@ -63,7 +63,7 @@ variable          rWCAcut45     equal   2^(1/6)*${sigma45}                     #
 
 variable          rDipoleCut    equal   ${dcut}                     # cut off for dipole
 variable          epsilonlj     equal   10.0/${temper}              # interaction strength (for final runs)
-variable          epsilonljdip  equal   0.001 # 1.0/${temper}       # interaction strength (for final runs)
+variable          epsilonljdip  equal   0.0 # 1.0/${temper}       # interaction strength (for final runs)
 variable          mudipole      equal   2.116601 # 1.4 # 3.54964787 # 2.116601 # 1.682804 #  3.0 # 1.732050808 # 2.5 # 1.732050808                       #strength of dipole
 variable          mudipole11    equal   ${mudipole}
 variable          mudipole22    equal   ${mudipole}#*${sigma22}*${sigma22}*${sigma22}
