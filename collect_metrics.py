@@ -67,7 +67,6 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--manual-tag", default=DEFAULT_MANUAL_TAG, help="Run directory tag for manual baseline")
     ap.add_argument("--max-parallel", type=int, default=env_max_parallel, help="Max parallel LAMMPS runs")
     ap.add_argument("--timeout-padding-s", type=float, default=env_timeout_padding_s, help="Extra seconds added to derived timeout from manual runtime")
-    ap.add_argument("--fallback-timeout-s", type=float, default=env_fallback_timeout_s, help="Timeout used if manual runtime unavailable (<=0 disables timeout)")
     ap.add_argument("--ks", default=",".join(DEFAULT_SWEEP["ks"]), help="Comma-separated kspace styles")
     ap.add_argument("--kacc", default=",".join(DEFAULT_SWEEP["kacc"]), help="Comma-separated kspace accuracies")
     ap.add_argument("--dcut", default=",".join(str(x) for x in DEFAULT_SWEEP["dcut"]), help="Comma-separated dcut values")
