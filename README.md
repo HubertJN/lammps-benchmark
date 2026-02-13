@@ -96,15 +96,15 @@ From the repo root:
 ```bash
 cmake -S mylammps/cmake -B mylammps/build \
   -D CMAKE_BUILD_TYPE=Release \
-  -D BUILD_SHARED_LIBS=ON \
   -D PKG_KOKKOS=ON \
   -D Kokkos_ENABLE_OPENMP=ON \
   -D PKG_DIPOLE=ON \
   -D PKG_KSPACE=ON \
   -D CMAKE_BUILD_WITH_INSTALL_RPATH=ON \
   -D CMAKE_INSTALL_RPATH='$ORIGIN' \
-  -D CMAKE_INSTALL_RPATH_USE_LINK_PATH=OFF
-
+  -D CMAKE_INSTALL_RPATH_USE_LINK_PATH=OFF \
+  -D FFT=FFTW3 \
+  -D FFT_KOKKOS=FFTW3
 ```
 
 Once configuration finishes, compile with:<br>
