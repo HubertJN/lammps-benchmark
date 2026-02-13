@@ -39,7 +39,7 @@ SLURM_TEMPLATE = """#!/bin/bash
 #SBATCH --account={account}
 
 module purge
-module load GCC/13.2.0 OpenMPI/4.1.6 CUDA/12.9.0 IPython FFTW
+module load GCC/13.2.0 OpenMPI/4.1.6 IPython FFTW
 
 srun {lammps_cmd}
 """
