@@ -19,7 +19,7 @@ PARAMS = {
 }
 
 LAMMPS_COMMAND_TEMPLATE = (
-    "mylammps/build/lmp -k on t 1 -sf kk -in in.performance_test.lmp "
+    "mylammps/build/lmp -k on t 1 -sf kk -in in.scaling_test.lmp "
     "-var ks {ks} "
     "-var kacc {kacc} "
     "-var dcut {dcut} "
