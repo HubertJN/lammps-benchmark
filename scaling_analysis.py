@@ -41,7 +41,7 @@ SLURM_TEMPLATE = """#!/bin/bash
 module purge
 module load GCC/13.2.0 OpenMPI/4.1.6 CUDA/12.9.0 IPython FFTW
 
-srun -n "$SLURM_NTASKS" {lammps_cmd}
+srun {lammps_cmd} -k on -t 1 -sf kk
 """
 
 
