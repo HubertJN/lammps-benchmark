@@ -8,7 +8,7 @@ from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, PageBreak
 
-from reportlab.graphics.shapes import Drawing, String
+from reportlab.graphics.shapes import Drawing, String, Group
 from reportlab.graphics.charts.piecharts import Pie
 from reportlab.graphics.charts.lineplots import LinePlot
 from reportlab.graphics.widgets.markers import makeMarker
@@ -303,6 +303,7 @@ def make_scaling_speedup_plot(
     *,
     points: list[tuple[int, float]],
     base_cores: int,
+    base_tps: float,
     title: str = "Scaling: speedup vs cores",
     width: float = 480,
     height: float = 240,
@@ -322,6 +323,24 @@ def make_scaling_speedup_plot(
     ideal = [(float(c), float(c) / float(base_cores)) for c in x_vals]
     max_ideal = max(float(c) / float(base_cores) for c in x_vals)
 
+    def _nice_step(step: float) -> float:
+        if step <= 0:
+            return 1.0
+        # Round to 1, 2, 5 × 10^k
+        import math
+
+        k = math.floor(math.log10(step))
+        base = step / (10**k)
+        if base <= 1:
+            nice = 1
+        elif base <= 2:
+            nice = 2
+        elif base <= 5:
+            nice = 5
+        else:
+            nice = 10
+        return float(nice) * (10**k)
+
     lp = LinePlot()
     lp.x = 52
     lp.y = 38
@@ -335,9 +354,26 @@ def make_scaling_speedup_plot(
     lp.xValueAxis.labelTextFormat = '%d'
     lp.xValueAxis.labels.fontSize = 8
 
-    lp.yValueAxis.valueMin = 1.0
-    lp.yValueAxis.valueMax = max(1.1, float(max(max_measured, max_ideal)) * 1.1)
+    y_min = 1.0
+    y_max = max(1.1, float(max(max_measured, max_ideal)) * 1.1)
+    lp.yValueAxis.valueMin = y_min
+    lp.yValueAxis.valueMax = y_max
     lp.yValueAxis.labels.fontSize = 8
+
+    # Choose explicit y ticks so the grid and the right-side axis align.
+    try:
+        span = float(y_max) - float(y_min)
+        step = _nice_step(span / 4.0)  # ~5 ticks including endpoints
+        ticks = []
+        v = float(y_min)
+        # Keep ticks within [y_min, y_max]
+        while v <= float(y_max) + 1e-9:
+            ticks.append(v)
+            v += step
+        if len(ticks) >= 2:
+            lp.yValueAxis.valueSteps = ticks
+    except Exception:
+        ticks = []
 
     # Grid
     for ax in (lp.xValueAxis, lp.yValueAxis):
@@ -358,10 +394,36 @@ def make_scaling_speedup_plot(
     lp.lines[1].strokeDashArray = [3, 2]
 
     d.add(lp)
-    d.add(String(16, height / 2, "Speedup (×)", textAnchor="middle", fontSize=9, angle=90))
+    g = Group()
+    g.add(String(0, 0, "Speedup (×)", textAnchor="middle", fontSize=9))
+    g.translate(30, height/2)
+    g.rotate(90)
+    d.add(g)
+    g = Group()
+    g.add(String(0, 0, "Timesteps/s", textAnchor="middle", fontSize=9))
+    g.translate(width + 10, height / 2)
+    g.rotate(270)
+    d.add(g)
     d.add(String(width / 2, 14, "Cores", textAnchor="middle", fontSize=9))
     d.add(String(width - 12, height - 30, "Ideal", textAnchor="end", fontSize=8, fillColor=colors.grey))
     d.add(String(width - 12, height - 42, "Measured", textAnchor="end", fontSize=8, fillColor=colors.darkblue))
+
+    # Right-side tick labels for timesteps/s (derived from speedup × base_tps).
+    # This avoids needing a second plot/axis object while still giving an absolute scale.
+    if base_tps and base_tps > 0:
+        right_x = lp.x + lp.width + 6
+        if not ticks:
+            # Fallback ticks if we couldn't compute explicit valueSteps above.
+            ticks = [y_min, (y_min + y_max) / 2.0, y_max]
+        for s in ticks:
+            try:
+                frac = (float(s) - float(y_min)) / (float(y_max) - float(y_min)) if y_max != y_min else 0.0
+                y_px = lp.y + frac * lp.height
+                tps = float(s) * float(base_tps)
+                d.add(String(right_x, y_px - 3, fmt_num(tps, digits=4), fontSize=8, fillColor=colors.black))
+            except Exception:
+                continue
+
     return d
 
 
@@ -822,9 +884,9 @@ def generate_performance_review(
         pie_drawings.append(outs["drawing"])
 
     scaling_drawing = None
-    scaling_points, base_cores, _base_tps = _load_scaling_speedup_points(runs_dir)
-    if scaling_points and base_cores is not None:
-        scaling_drawing = make_scaling_speedup_plot(points=scaling_points, base_cores=base_cores)
+    scaling_points, base_cores, base_tps = _load_scaling_speedup_points(runs_dir)
+    if scaling_points and base_cores is not None and base_tps is not None:
+        scaling_drawing = make_scaling_speedup_plot(points=scaling_points, base_cores=base_cores, base_tps=base_tps)
 
     out_pdf.parent.mkdir(parents=True, exist_ok=True)
     build_pdf(
