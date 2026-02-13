@@ -6,10 +6,12 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import inch
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, PageBreak
 
 from reportlab.graphics.shapes import Drawing, String
 from reportlab.graphics.charts.piecharts import Pie
+from reportlab.graphics.charts.lineplots import LinePlot
+from reportlab.graphics.widgets.markers import makeMarker
 from reportlab.graphics.renderPDF import GraphicsFlowable
 from reportlab.graphics import renderPDF
 
@@ -218,6 +220,151 @@ def _extract_final_total_energy_from_log_text(text: str) -> float | None:
     return last_value
 
 
+def _extract_last_timesteps_per_s_from_log_text(text: str) -> float | None:
+    # Example:
+    # Performance: 4680.949 tau/day, 27.089 timesteps/s, 81.266 katom-step/s
+    last: float | None = None
+    for line in text.splitlines():
+        if "Performance:" not in line:
+            continue
+        m = re.search(r"([0-9.]+)\s*timesteps/s", line)
+        if not m:
+            continue
+        try:
+            last = float(m.group(1))
+        except Exception:
+            pass
+    return last
+
+
+def _find_latest_scaling_summary(runs_dir: Path) -> Path | None:
+    candidates = list(runs_dir.glob("**/scaling_summary.json"))
+    if not candidates:
+        return None
+    try:
+        candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    except Exception:
+        candidates.sort()
+    return candidates[0]
+
+
+def _load_scaling_speedup_points(runs_dir: Path) -> tuple[list[tuple[int, float]], int | None, float | None]:
+    """Return (points, base_cores, base_tps).
+
+    points is a sorted list of (cores, speedup) for scaling runs that have logs.
+    Speedup is computed from timesteps/s relative to the minimum-cores run.
+    """
+
+    scaling_path = _find_latest_scaling_summary(runs_dir)
+    if scaling_path is None:
+        return [], None, None
+
+    try:
+        scaling = json.loads(scaling_path.read_text())
+    except Exception:
+        return [], None, None
+
+    best_tps_by_cores: dict[int, float] = {}
+    for r in (scaling.get("runs") or []):
+        try:
+            cores = int(r.get("cores"))
+        except Exception:
+            continue
+
+        log_path = r.get("log_path")
+        p = _resolve_log_path(log_path, runs_dir=runs_dir)
+        if p is None or not p.exists():
+            continue
+
+        try:
+            tps = _extract_last_timesteps_per_s_from_log_text(p.read_text(errors="replace"))
+        except Exception:
+            continue
+        if tps is None or tps <= 0:
+            continue
+
+        prev = best_tps_by_cores.get(cores)
+        if prev is None or tps > prev:
+            best_tps_by_cores[cores] = float(tps)
+
+    if not best_tps_by_cores:
+        return [], None, None
+
+    base_cores = min(best_tps_by_cores.keys())
+    base_tps = best_tps_by_cores.get(base_cores)
+    if base_tps is None or base_tps <= 0:
+        return [], None, None
+
+    points = [(c, best_tps_by_cores[c] / base_tps) for c in sorted(best_tps_by_cores.keys())]
+    return points, base_cores, base_tps
+
+
+def make_scaling_speedup_plot(
+    *,
+    points: list[tuple[int, float]],
+    base_cores: int,
+    title: str = "Scaling: speedup vs cores",
+    width: float = 480,
+    height: float = 240,
+) -> Drawing:
+    d = Drawing(width, height)
+    d.add(String(width / 2, height - 14, title, textAnchor="middle", fontSize=11))
+
+    if not points:
+        d.add(String(width / 2, height / 2, "No scaling results found.", textAnchor="middle", fontSize=10))
+        return d
+
+    x_vals = [c for c, _ in points]
+    min_x, max_x = min(x_vals), max(x_vals)
+    max_measured = max(s for _, s in points)
+
+    actual = [(float(c), float(s)) for c, s in points]
+    ideal = [(float(c), float(c) / float(base_cores)) for c in x_vals]
+    max_ideal = max(float(c) / float(base_cores) for c in x_vals)
+
+    lp = LinePlot()
+    lp.x = 52
+    lp.y = 38
+    lp.width = width - 70
+    lp.height = height - 68
+    lp.data = [actual, ideal]
+
+    lp.xValueAxis.valueMin = float(min_x)
+    lp.xValueAxis.valueMax = float(max_x)
+    lp.xValueAxis.valueSteps = [float(v) for v in x_vals]
+    lp.xValueAxis.labelTextFormat = '%d'
+    lp.xValueAxis.labels.fontSize = 8
+
+    lp.yValueAxis.valueMin = 1.0
+    lp.yValueAxis.valueMax = max(1.1, float(max(max_measured, max_ideal)) * 1.1)
+    lp.yValueAxis.labels.fontSize = 8
+
+    # Grid
+    for ax in (lp.xValueAxis, lp.yValueAxis):
+        if hasattr(ax, "visibleGrid"):
+            ax.visibleGrid = True
+        if hasattr(ax, "gridStrokeColor"):
+            ax.gridStrokeColor = colors.lightgrey
+        if hasattr(ax, "gridStrokeWidth"):
+            ax.gridStrokeWidth = 0.25
+
+    lp.lines[0].strokeColor = colors.darkblue
+    lp.lines[0].strokeWidth = 1.5
+    lp.lines[0].symbol = makeMarker('FilledCircle')
+    lp.lines[0].symbol.size = 4
+
+    lp.lines[1].strokeColor = colors.grey
+    lp.lines[1].strokeWidth = 1.0
+    lp.lines[1].strokeDashArray = [3, 2]
+
+    d.add(lp)
+    d.add(String(16, height / 2, "Speedup (×)", textAnchor="middle", fontSize=9, angle=90))
+    d.add(String(width / 2, 14, "Cores", textAnchor="middle", fontSize=9))
+    d.add(String(width - 12, height - 30, "Ideal", textAnchor="end", fontSize=8, fillColor=colors.grey))
+    d.add(String(width - 12, height - 42, "Measured", textAnchor="end", fontSize=8, fillColor=colors.darkblue))
+    return d
+
+
 def extract_final_total_energy_from_run(run: dict, *, runs_dir: Path) -> float | None:
     log_path = run.get("log_path")
     if not log_path:
@@ -396,6 +543,7 @@ def build_pdf(
     top_runs: list,
     table_runs: list,
     pie_drawings: list[Drawing],
+    scaling_drawing: Drawing | None,
     params_by_tag: dict,
     runs_dir: Path,
     out_pdf: Path,
@@ -586,6 +734,29 @@ def build_pdf(
         )
         story.append(pie_tbl)
 
+    # Optional scaling plot (if scaling_summary.json + logs exist).
+    if scaling_drawing is not None:
+        story.append(PageBreak())
+        story.append(Paragraph("Scaling", styles["Heading2"]))
+        story.append(Spacer(1, 0.06 * inch))
+        story.append(
+            Paragraph(
+                "Speedup vs cores from scaling runs (speedup computed from timesteps/s relative to the smallest core count).",
+                body,
+            )
+        )
+        story.append(Spacer(1, 0.16 * inch))
+
+        # Fit to page width.
+        try:
+            page_w3 = A4[0] - (doc.leftMargin + doc.rightMargin)
+            sx = page_w3 / float(getattr(scaling_drawing, "width", page_w3) or page_w3)
+            if sx and abs(sx - 1.0) > 1e-6:
+                scaling_drawing.scale(sx, sx)
+        except Exception:
+            pass
+        story.append(GraphicsFlowable(scaling_drawing))
+
     timed_out = []
     for r in (summary.get("runs") or []):
         runner = r.get("runner") or {}
@@ -595,48 +766,7 @@ def build_pdf(
     story.append(Spacer(1, 0.18 * inch))
     story.append(Paragraph("Timed Out Runs", styles["Heading2"]))
     story.append(Spacer(1, 0.06 * inch))
-
-    if not timed_out:
-        story.append(Paragraph("No runs timed out.", body))
-    else:
-        to_rows = [["Tag", "ks", "kacc", "dcut"]]
-        for r in timed_out:
-            tag = r.get("tag", "unknown")
-            p = params_by_tag.get(tag, {})
-            ks = p.get("ks") or (r.get("kspace") or {}).get("style")
-            to_rows.append(
-                [
-                    str(tag),
-                    format_param_value(ks),
-                    format_param_value(p.get("kacc")),
-                    format_param_value(p.get("dcut")),
-                ]
-            )
-
-        page_w2 = A4[0] - (doc.leftMargin + doc.rightMargin)
-        col_widths2 = [
-            1.50 * inch,
-            1.00 * inch,
-            1.00 * inch,
-            page_w2 - (1.50 + 1.00 + 1.00) * inch,
-        ]
-        to_tbl = Table(to_rows, colWidths=col_widths2, hAlign="LEFT")
-        to_tbl.setStyle(
-            TableStyle(
-                [
-                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                    ("FONTSIZE", (0, 0), (-1, -1), 8),
-                    ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
-                    ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
-                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                    ("LEFTPADDING", (0, 0), (-1, -1), 3),
-                    ("RIGHTPADDING", (0, 0), (-1, -1), 3),
-                    ("TOPPADDING", (0, 0), (-1, -1), 2),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
-                ]
-            )
-        )
-        story.append(to_tbl)
+    story.append(Paragraph(f"Timed out runs: <b>{len(timed_out)}</b>.", body))
 
     doc.build(story)
 
@@ -691,12 +821,18 @@ def generate_performance_review(
         outs = make_timing_pie(r, base, merge_lt_pct=merge_lt_pct, title=f"Rank {i}")
         pie_drawings.append(outs["drawing"])
 
+    scaling_drawing = None
+    scaling_points, base_cores, _base_tps = _load_scaling_speedup_points(runs_dir)
+    if scaling_points and base_cores is not None:
+        scaling_drawing = make_scaling_speedup_plot(points=scaling_points, base_cores=base_cores)
+
     out_pdf.parent.mkdir(parents=True, exist_ok=True)
     build_pdf(
         summary=summary,
         top_runs=top_runs,
         table_runs=table_runs,
         pie_drawings=pie_drawings,
+        scaling_drawing=scaling_drawing,
         params_by_tag=params_by_tag,
         runs_dir=runs_dir,
         out_pdf=out_pdf,
