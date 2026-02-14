@@ -133,6 +133,10 @@ If your binary is somewhere else, pass `--lmp /path/to/lmp` to `collect_metrics.
 bash verify.sh
 ```
 
+### 5) Slurm config
+
+Depending on the node you might be running on, it can be necessary to adjust the default slurm scripts within `collect_metrics.py` and `scaling_analysis.py`. This can include: adding an account, adding a GPU request etc. If you have any trouble with this, contact your HPC admin team for help or search online. There are plenty of resources available that explain SLURM scripts.
+
 ---
 
 ## How to run everything
@@ -146,7 +150,7 @@ python scaling_analysis.py --help
 
 From the repo root and within the virtual environment:
 
-1. Edit `slurm_config.yaml` for your cluster (`ACCOUNT`, `CORES_PER_NODE`, `PARTITION`, `TIME_LIMIT`).
+1. Edit `slurm_config.yaml` for your cluster (`CORES_PER_NODE`, `PARTITION`, `TIME_LIMIT`).
 
 ```bash
 python collect_metrics.py --manual --submit # runs automated metric collection
@@ -187,7 +191,7 @@ Scaling (Slurm script generation):
 
 ## Scaling runs
 
-1. Edit `slurm_config.yaml` for your cluster (`ACCOUNT`, `CORES_PER_NODE`, `PARTITION`, `TIME_LIMIT`).
+1. Edit `slurm_config.yaml` for your cluster (`CORES_PER_NODE`, `PARTITION`, `TIME_LIMIT`).
 
 2. Generate scripts (no submit):
 
