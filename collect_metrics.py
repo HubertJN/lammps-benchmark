@@ -233,7 +233,7 @@ def collect_summary(*, runs_dir: Path, out_json: Path, manual_tag: str) -> dict:
 
     # Consolidate logs under runs/logs/ (manual + scaling_*).
     _copy_log(runs_dir / manual_tag / "lammps.log", log_dir / f"{manual_tag}.log")
-    for p in sorted(runs_dir.glob("scaling_*/lammps.log")):
+    for p in sorted(runs_dir.glob("run_*/lammps.log")):
         _copy_log(p, log_dir / f"{p.parent.name}.log")
 
     summary = collect_logs_to_json(log_dir, out_json, runs_dir=runs_dir)
