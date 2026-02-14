@@ -398,6 +398,16 @@ def run_lammps_job(job: Dict[str, Any]) -> Dict[str, Any]:
     returncode: int = -1
     note: Optional[str] = None
 
+    BASE_ENV = os.environ.copy()
+    BASE_ENV.update({
+        "OMP_NUM_THREADS": "1",
+        "OMP_PROC_BIND": "true",
+        "OMP_PLACES": "threads",
+        "FFTW_NUM_THREADS": "1",
+        "MKL_NUM_THREADS": "1",
+        "OPENBLAS_NUM_THREADS": "1",
+    })
+
     try:
         r = subprocess.run(
             cmd,
