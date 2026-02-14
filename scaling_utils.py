@@ -161,8 +161,12 @@ def generate_slurm_scripts(
     lammps_command_template: str,
     slurm_template: str,
     submit: bool,
+    mode: str, 
 ) -> tuple[int, list[tuple[Path, str]]]:
     """Generate run directories containing job.slurm scripts; optionally submit with sbatch."""
+
+    if mode not in {"collect_metrics", "scaling_analysis"}:
+        raise ValueError(f"Invalid mode: {mode}")
 
     runs_dir.mkdir(parents=True, exist_ok=True)
 
@@ -179,7 +183,7 @@ def generate_slurm_scripts(
         "machine": machine,
         "generator": {
             "timestamp_utc": datetime.utcnow().isoformat(timespec="seconds") + "Z",
-            "tool": "scaling_analysis",
+            "tool": mode,
         },
         "slurm": {
             "partition": partition,
@@ -190,9 +194,14 @@ def generate_slurm_scripts(
         "runs": [],
     }
 
+    i = 0
     for ks, kacc, dcut, total_cores in product(ks_list, kacc_list, dcut_list, cores_list):
         total_cores = int(total_cores)
-        tag = f"scaling_{total_cores:06d}"
+        if mode == "collect_metrics":
+            tag = f"runs_{i:06d}"
+            i += 1
+        elif mode == "scaling_analysis":
+            tag = f"scaling_{total_cores:06d}"
         run_dir = runs_dir / tag
         log_path = run_dir / "lammps.log"
 
@@ -294,6 +303,10 @@ def generate_slurm_scripts(
             summary["runs"][-1]["submitted"] = False
 
     # One-file summary of all generated jobs under runs_dir.
-    _write_json(runs_dir / "scaling_summary.json", summary)
+    if mode == "collect_metrics":
+        summary_path = runs_dir / "metrics_slurm_summary.json"
+    elif mode == "scaling_analysis":
+        summary_path = runs_dir / "scaling_slurm_summary.json"
+    _write_json(summary_path, summary)
 
     return n_written, submitted
