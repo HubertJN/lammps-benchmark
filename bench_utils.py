@@ -158,26 +158,40 @@ def parse_log(text: str) -> Dict[str, Any]:
             if m_kat:
                 out["performance"]["katom_steps_per_s"] = float(m_kat.group(1))
 
-    # Kspace style & accuracy (captures the executed line like: kspace_style pppm/dipole  1.0e-4)
-    m = re.search(r"^\s*kspace_style\s+(\S+)\s+([0-9.eE+-]+)\s*$", text, re.M)
+    # kspace_style (already fine)
+    m = re.search(r"^\s*kspace_style\s+(\S+)\s+([0-9.eE+-]+)(?:\s*#.*)?\s*$", text, re.M)
     if m:
         out["kspace"]["style"] = m.group(1)
         out["kspace"]["accuracy"] = m.group(2)
 
-    # PPPM details (if present)
-    m = re.search(r"grid\s*=\s*([0-9]+\s+[0-9]+\s+[0-9]+)", text)
+    # PPPM details: match the actual lines shown in your output (take last occurrence)
+    m = None
+    for m in re.finditer(r"^\s*grid\s*=\s*([0-9]+\s+[0-9]+\s+[0-9]+)\s*$", text, re.M):
+        pass
     if m:
         out["kspace"]["pppm_grid"] = m.group(1)
-    m = re.search(r"stencil order\s*=\s*([0-9]+)", text)
+
+    m = None
+    for m in re.finditer(r"^\s*stencil\s+order\s*=\s*([0-9]+)\s*$", text, re.M):
+        pass
     if m:
         out["kspace"]["pppm_order"] = int(m.group(1))
-    m = re.search(r"estimated absolute RMS force accuracy\s*=\s*([0-9.eE+-]+)", text)
+
+    m = None
+    for m in re.finditer(r"^\s*estimated\s+absolute\s+RMS\s+force\s+accuracy\s*=\s*([0-9.eE+-]+)\s*$", text, re.M):
+        pass
     if m:
         out["kspace"]["pppm_est_abs_rms_force_acc"] = m.group(1)
-    m = re.search(r"estimated relative force accuracy\s*=\s*([0-9.eE+-]+)", text)
+
+    m = None
+    for m in re.finditer(r"^\s*estimated\s+relative\s+force\s+accuracy\s*=\s*([0-9.eE+-]+)\s*$", text, re.M):
+        pass
     if m:
         out["kspace"]["pppm_est_rel_force_acc"] = m.group(1)
-    m = re.search(r"using\s+(?:single|double)\s+precision\s+(\S+)", text)
+
+    m = None
+    for m in re.finditer(r"^\s*using\s+(?:single|double)\s+precision\s+(\S+)\s*$", text, re.M):
+        pass
     if m:
         out["kspace"]["fft_backend"] = m.group(1)
 
