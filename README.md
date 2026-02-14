@@ -1,7 +1,8 @@
 
 # LAMMPS benchmark, parameter sweep and report generator
 
-This is a personal project that started as me tuning an input script (for myself and for collaborator workflows), and then grew into a full automation suite: run a manual baseline, sweep key simulation parameters, collect parsed metrics, and generate a final PDF performance report.
+This is a personal project that started as me tuning an input script (for myself and for collaborator workflows), and then grew into a full automation suite: run a manual baseline, sweep key simulation parameters, collect parsed metrics, and generate a final PDF performance report. <br>
+<b> This project is designed to function on an HPC systems that makes use of SLURM.</b>
 
 ## What this project does
 
@@ -10,13 +11,14 @@ This is a personal project that started as me tuning an input script (for myself
   - `ks` (kspace style)
   - `kacc` (kspace accuracy)
   - `dcut` (dipole cutoff)
+- Runs an automated <b>core scaling test</b> (`in.scaling_test.lmp`)
 - Parses logs and writes a consolidated summary JSON
-- Builds a PDF report with ranked runs, speedups, timing pies, and timeout table
-- Generates Slurm **scaling run scripts** (and optionally submits them), writing a `scaling_summary.json`
+- Builds a PDF report with ranked runs, speedups, timing pies, timeout and (if available) speed-up data
+
 
 Main scripts:
 
-- `collect_metrics.py` -> runs the manual baseline locally to derive a Slurm walltime, generates (and optionally submits) scaling `job.slurm` scripts under `runs/`; use `--collect` to write a consolidated metrics JSON
+- `collect_metrics.py` -> runs the manual baseline to derive a walltime, generates (and optionally submits) scaling `job.slurm` scripts under `runs/`; use `--collect` to write a consolidated metrics JSON
 - `plot_metrics.py` -> generates `runs/performance_review.pdf`
 - `scaling_analysis.py` -> generates (and optionally submits) scaling `job.slurm` scripts under a chosen output directory
 
@@ -131,17 +133,6 @@ If your binary is somewhere else, pass `--lmp /path/to/lmp` to `collect_metrics.
 bash verify.sh
 ```
 
-### 5) Set runtime controls
-
-```
-export OMP_NUM_THREADS=1
-export OMP_PROC_BIND=true
-export OMP_PLACES=threads
-export FFTW_NUM_THREADS=1
-export MKL_NUM_THREADS=1
-export OPENBLAS_NUM_THREADS=1
-```
-
 ---
 
 ## How to run everything
@@ -158,9 +149,12 @@ From the repo root and within the virtual environment:
 1. Edit `slurm_config.yaml` for your cluster (`ACCOUNT`, `CORES_PER_NODE`, `PARTITION`, `TIME_LIMIT`).
 
 ```bash
-python collect_metrics.py             # run manual baseline + generate scaling jobs under runs/
-# python collect_metrics.py --submit   # optionally submit via sbatch
+python collect_metrics.py --manual --submit # runs automated metric collection
+```
 
+After submission, it will optionally prompt you to monitor jobs using `squeue`.
+
+```
 # after jobs finish:
 python collect_metrics.py --collect
 python plot_metrics.py
@@ -168,9 +162,8 @@ python plot_metrics.py
 
 This will:
 
-1. Generate a manual baseline job (`runs/manual/job.slurm`)
-2. Generate sweep jobs (`runs/run_*/job.slurm`)
-3. Optionally submit them (with `--submit`)
+1. Generate and submit a manual baseline job (`runs/manual/job.slurm`)
+2. Generate and submit sweep jobs (`runs/run_*/job.slurm`) once manual job is finished
 4. Collect logs into `runs/benchmark_summary.json` (with `--collect`)
 5. Generate report at `runs/performance_review.pdf`
 
@@ -181,31 +174,31 @@ This will:
 * `runs/manual/` -> manual baseline run artifacts
 * `runs/run_*/` -> sweep run artifacts (`params.json`, `lammps.log`, `run_result.json`)
 * `runs/logs/*.log` -> consolidated log copies
-* `runs/benchmark_summary.json` -> parsed machine + run metrics
+* `runs/metrics_summary.json` -> parsed machine + run metrics
 * `runs/performance_review.pdf` -> final benchmark report
 
 Scaling (Slurm script generation):
 
 * `runs/scaling_*/` -> generated scaling jobs (`job.slurm`, `params.json`)
-* `runs/scaling_*/scaling_summary.json` -> machine + slurm config + list of generated scaling jobs
+* `runs/scaling_summary.json` -> machine + slurm config + list of generated scaling jobs
 * `runs/scaling_*/submit_result.json` -> `sbatch` output (only when `--submit`)
 
 ---
 
-## Scaling runs (Slurm)
+## Scaling runs
 
 1. Edit `slurm_config.yaml` for your cluster (`ACCOUNT`, `CORES_PER_NODE`, `PARTITION`, `TIME_LIMIT`).
 
 2. Generate scripts (no submit):
 
 ```bash
-python scaling_analysis.py --runs-dir runs/scaling
+python scaling_analysis.py
 ```
 
 3. Generate + submit:
 
 ```bash
-python scaling_analysis.py --runs-dir runs/scaling --submit
+python scaling_analysis.py --submit
 ```
 
 After submission, it will optionally prompt you to monitor jobs using `squeue`.
@@ -216,4 +209,3 @@ After submission, it will optionally prompt you to monitor jobs using `squeue`.
 
 * Default sweep dimensions are defined in `DEFAULT_SWEEP` in `collect_metrics.py`.
 * The sweep input script consumes runtime variables (`ks`, `kacc`, `dcut`) via `-var`.
-* Existing successful runs are reused/skipped to avoid rerunning identical parameter sets.
