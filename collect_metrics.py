@@ -46,7 +46,7 @@ LAMMPS_COMMAND_TEMPLATE = (
 
 SLURM_TEMPLATE = """#!/bin/bash
 
-#SBATCH --output={log_dir}/slurm-%j.out
+#SBATCH --output={log_dir}/slurm.out
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=1
@@ -304,9 +304,6 @@ def main(argv: list[str] | None = None) -> int:
 
     cfg = load_slurm_config(args.config)
 
-    manual_out = _slurm_out_status(manual_dir)
-    manual_log_time_s = _manual_time_seconds(manual_dir)
-
     if args.manual:
         # Manual job walltime comes from config; its *measured* runtime is parsed from its log on later runs.
         manual_time_limit = str(cfg["TIME_LIMIT"])
@@ -350,6 +347,9 @@ def main(argv: list[str] | None = None) -> int:
             ok = wait_job_afterok(note)
             if not ok:
                 raise SystemExit(f"Manual job {note} did not complete successfully")
+            
+    manual_log_time_s = _manual_time_seconds(manual_dir)
+    manual_out = _slurm_out_status(manual_dir)
 
     # Require the manual baseline to have been run via --manual and completed.
     if manual_log_time_s is None:
