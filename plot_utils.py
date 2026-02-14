@@ -253,7 +253,7 @@ def _extract_last_timesteps_per_s_from_log_text(text: str) -> float | None:
 
 
 def _find_latest_scaling_summary(runs_dir: Path) -> Path | None:
-    candidates = list(runs_dir.glob("**/scaling_summary.json"))
+    candidates = list(runs_dir.glob("**/scaling_slurm_summary.json"))
     if not candidates:
         return None
     try:
@@ -897,6 +897,7 @@ def generate_performance_review(
 
     scaling_drawing = None
     scaling_points, base_cores, base_tps = _load_scaling_speedup_points(runs_dir)
+
     if scaling_points and base_cores is not None and base_tps is not None:
         scaling_drawing = make_scaling_speedup_plot(points=scaling_points, base_cores=base_cores, base_tps=base_tps)
 
