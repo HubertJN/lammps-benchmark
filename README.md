@@ -16,7 +16,7 @@ This is a personal project that started as me tuning an input script (for myself
 
 Main scripts:
 
-- `collect_metrics.py` -> executes manual + sweep runs and writes `runs/benchmark_summary.json`
+- `collect_metrics.py` -> runs the manual baseline locally to derive a Slurm walltime, generates (and optionally submits) scaling `job.slurm` scripts under `runs/`; use `--collect` to write a consolidated metrics JSON
 - `plot_metrics.py` -> generates `runs/performance_review.pdf`
 - `scaling_analysis.py` -> generates (and optionally submits) scaling `job.slurm` scripts under a chosen output directory
 
@@ -155,17 +155,24 @@ python scaling_analysis.py --help
 
 From the repo root and within the virtual environment:
 
+1. Edit `slurm_config.yaml` for your cluster (`ACCOUNT`, `CORES_PER_NODE`, `PARTITION`, `TIME_LIMIT`).
+
 ```bash
-python collect_metrics.py
+python collect_metrics.py             # run manual baseline + generate scaling jobs under runs/
+# python collect_metrics.py --submit   # optionally submit via sbatch
+
+# after jobs finish:
+python collect_metrics.py --collect
 python plot_metrics.py
 ```
 
 This will:
 
-1. Run manual baseline (`runs/manual`)
-2. Run sweep cases (`runs/run_*`)
-3. Parse logs into `runs/benchmark_summary.json`
-4. Generate report at `runs/performance_review.pdf`
+1. Generate a manual baseline job (`runs/manual/job.slurm`)
+2. Generate sweep jobs (`runs/run_*/job.slurm`)
+3. Optionally submit them (with `--submit`)
+4. Collect logs into `runs/benchmark_summary.json` (with `--collect`)
+5. Generate report at `runs/performance_review.pdf`
 
 ---
 
@@ -207,6 +214,6 @@ After submission, it will optionally prompt you to monitor jobs using `squeue`.
 
 ## Notes
 
-* Sweep dimensions are defined in `SWEEP` in `collect_metrics.py`.
+* Default sweep dimensions are defined in `DEFAULT_SWEEP` in `collect_metrics.py`.
 * The sweep input script consumes runtime variables (`ks`, `kacc`, `dcut`) via `-var`.
 * Existing successful runs are reused/skipped to avoid rerunning identical parameter sets.
