@@ -1,231 +1,372 @@
+from __future__ import annotations
+
 import argparse
+import json
 import math
-import os
-from itertools import product
-from multiprocessing import Pool
+import re
+import shutil
+import subprocess
 from pathlib import Path
 
-from bench_utils import (
-    canonical_params,
-    collect_logs_to_json,
-    index_existing_runs,
-    normalize_value,
-    read_json,
-    reserve_run_ids,
-    run_complete,
-    run_lammps_job,
+from bench_utils import collect_logs_to_json, parse_log, read_json
+
+from scaling_utils import (
+    generate_slurm_scripts,
+    load_slurm_config,
+    monitor_slurm_jobs_interactive,
+    parse_csv,
+    parse_csv_ints,
+    prompt_yes_no,
 )
 
-
-DEFAULT_LMP = "mylammps/build/lmp"
-DEFAULT_INPUT = "in.performance_test.lmp"
 DEFAULT_MANUAL_INPUT = "in.manual.lmp"
 DEFAULT_MANUAL_TAG = "manual"
-DEFAULT_MAX_PARALLEL = "4"
-DEFAULT_TIMEOUT_PADDING_S =  "30"
 
-
-DEFAULT_SWEEP = {
+# Match scaling_analysis.py defaults.
+PARAMS = {
     "ks": [
         "ewald_dipole",
         "pppm_dipole",
     ],
     "kacc": ["1.0e-3", "1.0e-4", "1.0e-5", "1.0e-6"],
     "dcut": [4, 5, 6, 7, 8, 9, 10],
+    "cores" : [1],
 }
 
+LAMMPS_COMMAND_TEMPLATE = (
+    "mylammps/build/lmp -k on t 1 -sf kk -in in.performance_test.lmp "
+    "-var ks {ks} "
+    "-var kacc {kacc} "
+    "-var dcut {dcut} "
+    "-var tag {tag} "
+    "-log {log_path}"
+)
 
-def parse_csv(s: str) -> list[str]:
-    return [p.strip() for p in str(s).split(",") if p.strip()]
+SLURM_TEMPLATE = """#!/bin/bash
+
+#SBATCH --output={log_dir}/slurm-%j.out
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=1
+#SBATCH --mem-per-cpu=3850
+#SBATCH --partition={partition}
+#SBATCH --time={time_limit}
+
+module purge
+module load GCC/13.2.0 OpenMPI/4.1.6 IPython FFTW
+
+export OMP_NUM_THREADS=1
+export OMP_PROC_BIND=true
+export OMP_PLACES=threads
+export FFTW_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+export OPENBLAS_NUM_THREADS=1
+
+srun --cpu-bind=cores {lammps_cmd}
+"""
 
 
-def parse_csv_ints(s: str) -> list[int]:
-    return [int(p) for p in parse_csv(s)]
+def _slurm_time_from_seconds(seconds: float) -> str:
+    # Slurm expects a walltime; safest is to round up to full minutes.
+    s = int(max(0.0, float(seconds)))
+    s = max(60, int(math.ceil(s / 60.0) * 60))
+    h = s // 3600
+    m = (s % 3600) // 60
+    sec = s % 60
+    return f"{h:02d}:{m:02d}:{sec:02d}"
 
 
-def _normalize_sweep_params(params: dict, sweep_keys: list[str]) -> None:
-    for k in sweep_keys:
-        if k in params:
-            params[k] = normalize_value(k, params[k])
+def _copy_log(src: Path, dst: Path) -> None:
+    if not src.exists():
+        return
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    dst.write_text(src.read_text(errors="replace"))
+
+
+def _parse_walltime_to_seconds(s: str | None) -> float | None:
+    if not s:
+        return None
+    text = str(s).strip()
+    # Common formats:
+    #   0:00:30
+    #   12:34:56
+    #   2-12:34:56
+    m = re.match(r"^(?:(\d+)-)?(\d+):(\d+):(\d+)$", text)
+    if not m:
+        return None
+    days = int(m.group(1) or 0)
+    h = int(m.group(2))
+    minutes = int(m.group(3))
+    sec = int(m.group(4))
+    return float(days * 86400 + h * 3600 + minutes * 60 + sec)
+
+
+def _latest_slurm_out(run_dir: Path) -> Path | None:
+    outs = list(run_dir.glob("slurm-*.out"))
+    if not outs:
+        return None
+    try:
+        outs.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    except Exception:
+        outs.sort()
+    return outs[0]
+
+
+def _slurm_out_status(run_dir: Path) -> dict:
+    """Best-effort status classification from slurm-*.out."""
+    p = _latest_slurm_out(run_dir)
+    if p is None:
+        return {"state": "missing", "path": None, "note": "no slurm-*.out found"}
+
+    try:
+        text = p.read_text(errors="replace")
+    except Exception:
+        return {"state": "unreadable", "path": str(p), "note": "cannot read slurm output"}
+
+    t = text.lower()
+
+    timeout_markers = [
+        "due to time limit",
+        "time limit",
+        "cancelled",
+        "canceled",
+    ]
+    if any(m in t for m in timeout_markers):
+        return {"state": "timeout", "path": str(p), "note": "time limit / cancelled marker in slurm output"}
+
+    error_markers = [
+        "srun: error",
+        "slurmstepd:",
+        "segmentation fault",
+        "floating point exception",
+        "out of memory",
+        "oom-kill",
+        "killed",
+        "error:",
+    ]
+    if any(m in t for m in error_markers):
+        # Don't misclassify benign "slurmstepd:" lines as errors unless they look like errors.
+        if "slurmstepd:" in t and "error" not in t and "failed" not in t and "exceeded" not in t:
+            pass
+        else:
+            return {"state": "error", "path": str(p), "note": "error marker in slurm output"}
+
+    m = re.search(r"exited with exit code\s+(\d+)", t)
+    if m:
+        try:
+            code = int(m.group(1))
+        except Exception:
+            code = None
+        if code not in (None, 0):
+            return {"state": "error", "path": str(p), "note": f"exit code {code} in slurm output"}
+
+    return {"state": "ok", "path": str(p), "note": "no timeout/error markers found"}
+
+
+def _manual_time_seconds(manual_dir: Path) -> float | None:
+    st = _slurm_out_status(manual_dir)
+    if st.get("state") in {"timeout", "error"}:
+        return None
+    log_path = manual_dir / "lammps.log"
+    if not log_path.exists():
+        return None
+    parsed = parse_log(log_path.read_text(errors="replace"))
+    t = _parse_walltime_to_seconds(parsed.get("total_wall_time"))
+    if isinstance(t, (int, float)) and float(t) > 0:
+        return float(t)
+    lt = parsed.get("loop_time_s")
+    if isinstance(lt, (int, float)) and float(lt) > 0:
+        return float(lt)
+    return None
+
+
+def _write_manual_slurm(*, run_dir: Path, partition: str, time_limit: str, account: str, lammps_cmd: str) -> Path:
+    run_dir.mkdir(parents=True, exist_ok=True)
+    script = SLURM_TEMPLATE.format(
+        run_dir=str(run_dir),
+        nodes=1,
+        ntasks_per_node=1,
+        partition=partition,
+        time_limit=time_limit,
+        account=account,
+        log_dir=str(run_dir),
+        lammps_cmd=lammps_cmd,
+    )
+    p = run_dir / "job.slurm"
+    p.write_text(script)
+    return p
+
+
+def _submit_sbatch(slurm_path: Path) -> str:
+    sbatch = shutil.which("sbatch")
+    if not sbatch:
+        raise SystemExit("--submit requested but 'sbatch' was not found in PATH")
+    r = subprocess.run([sbatch, str(slurm_path)], check=True, text=True, capture_output=True)
+    return (r.stdout or r.stderr).strip()
+
+
+def collect_summary(*, runs_dir: Path, out_json: Path, manual_tag: str) -> dict:
+    log_dir = runs_dir / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    # Consolidate logs under runs/logs/ (manual + scaling_*).
+    _copy_log(runs_dir / manual_tag / "lammps.log", log_dir / f"{manual_tag}.log")
+    for p in sorted(runs_dir.glob("scaling_*/lammps.log")):
+        _copy_log(p, log_dir / f"{p.parent.name}.log")
+
+    summary = collect_logs_to_json(log_dir, out_json, runs_dir=runs_dir)
+
+    # Enrich with any metadata files present under each run dir.
+    for run in summary.get("runs", []):
+        tag = run.get("tag")
+        if not tag:
+            continue
+        run_dir = runs_dir / str(tag)
+        params_path = run_dir / "params.json"
+        if params_path.exists():
+            run["params"] = read_json(params_path)
+        submit_path = run_dir / "submit_result.json"
+        if submit_path.exists():
+            run["submit_result"] = read_json(submit_path)
+
+    out_json.write_text(json.dumps(summary, indent=2, sort_keys=False) + "\n")
+    return summary
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
-        description="Run LAMMPS benchmark sweep, collect logs, and write benchmark_summary.json",
+        description=(
+            "Scaling workflow helper: run manual baseline (to set Slurm walltime), "
+            "generate scaling Slurm scripts (optionally submit), or collect metrics into a summary JSON."
+        ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    ap.add_argument("--runs-dir", default="runs", help="Directory containing run_* folders")
-    ap.add_argument("--lmp", default=DEFAULT_LMP, help="Path to LAMMPS executable")
-    ap.add_argument("--input", default=DEFAULT_INPUT, help="LAMMPS input script for sweep runs")
-    ap.add_argument("--manual-input", default=DEFAULT_MANUAL_INPUT, help="LAMMPS input script for manual baseline")
-    ap.add_argument("--manual-tag", default=DEFAULT_MANUAL_TAG, help="Run directory tag for manual baseline")
-    ap.add_argument("--max-parallel", type=int, default=DEFAULT_MAX_PARALLEL, help="Max parallel LAMMPS runs")
-    ap.add_argument("--timeout-padding-s", type=float, default=DEFAULT_TIMEOUT_PADDING_S, help="Extra seconds added to derived timeout from manual runtime")
-    ap.add_argument("--ks", default=",".join(DEFAULT_SWEEP["ks"]), help="Comma-separated kspace styles")
-    ap.add_argument("--kacc", default=",".join(DEFAULT_SWEEP["kacc"]), help="Comma-separated kspace accuracies")
-    ap.add_argument("--dcut", default=",".join(str(x) for x in DEFAULT_SWEEP["dcut"]), help="Comma-separated dcut values")
+    ap.add_argument("--config", default="slurm_config.yaml", help="Path to slurm_config.yaml")
+    ap.add_argument("--runs-dir", default="runs", help="Runs directory")
+    ap.add_argument("--lmp", default="mylammps/build/lmp", help="Path to LAMMPS executable")
+
+    ap.add_argument("--manual-input", default=DEFAULT_MANUAL_INPUT, help="Manual baseline input script")
+    ap.add_argument("--manual-tag", default=DEFAULT_MANUAL_TAG, help="Run directory name for manual baseline")
+    ap.add_argument(
+        "--manual",
+        action="store_true",
+        help="Generate the manual baseline Slurm job (and optionally submit) then exit",
+    )
+    ap.add_argument("--time-pad-s", type=float, default=0.0, help="Seconds added to manual runtime for Slurm time")
+
+    ap.add_argument("--submit", action="store_true", help="Submit generated scripts with sbatch")
+    ap.add_argument("--collect", action="store_true", help="Collect available metrics into a summary JSON and exit")
+    ap.add_argument(
+        "--out-json",
+        default="metrics_summary.json",
+        help="Output JSON name (created under runs-dir) for --collect",
+    )
+
+    ap.add_argument("--ks", default=",".join(PARAMS["ks"]), help="Comma-separated kspace styles")
+    ap.add_argument("--kacc", default=",".join(PARAMS["kacc"]), help="Comma-separated kspace accuracies")
+    ap.add_argument("--dcut", default=",".join(str(x) for x in PARAMS["dcut"]), help="Comma-separated dcut values")
+    ap.add_argument("--cores", default=",".join(str(x) for x in PARAMS["cores"]), help="Comma-separated core counts")
     args = ap.parse_args(argv)
 
     runs_dir = Path(args.runs_dir)
     runs_dir.mkdir(parents=True, exist_ok=True)
 
-    lmp = str(args.lmp)
-    inp = str(args.input)
-    manual_inp = str(args.manual_input)
     manual_tag = str(args.manual_tag)
-
-    max_parallel = int(args.max_parallel)
-    timeout_padding_s = float(args.timeout_padding_s)
-
-    sweep = {
-        "ks": parse_csv(args.ks),
-        "kacc": parse_csv(args.kacc),
-        "dcut": parse_csv_ints(args.dcut),
-    }
-
-    sweep_keys = [k for k in sweep.keys() if k != "ks"]
-    sweep_values = [sweep[k] for k in sweep_keys]
-
-    include_sweep = ["input", "lmp", "ks"] + sweep_keys
-    existing_sweep = index_existing_runs(
-        runs_dir,
-        run_glob="run_*",
-        include_keys=include_sweep,
-        normalize=lambda p: _normalize_sweep_params(p, sweep_keys),
-    )
-
-    pending: list[tuple[str | None, str, dict]] = []
-    skipped: list[tuple[str, str, dict]] = []
-
-    for ks in sweep["ks"]:
-        for combo in product(*sweep_values):
-            combo_dict = {k: normalize_value(k, v) for k, v in zip(sweep_keys, combo)}
-            desired_params = {"input": inp, "lmp": lmp, "ks": ks, **combo_dict}
-            sig = canonical_params(desired_params, include_keys=include_sweep)
-
-            existing_id = existing_sweep.get(sig)
-            if existing_id is not None:
-                run_dir = runs_dir / existing_id
-                if run_complete(run_dir):
-                    skipped.append((existing_id, ks, combo_dict))
-                    continue
-                pending.append((existing_id, ks, combo_dict))
-                continue
-
-            pending.append((None, ks, combo_dict))
-
-    need_new = sum(1 for rid, _, _ in pending if rid is None)
-    new_ids = reserve_run_ids(runs_dir, need_new)
-    new_it = iter(new_ids)
-    jobs = [(rid if rid is not None else next(new_it), ks, combo_dict) for rid, ks, combo_dict in pending]
-
     manual_dir = runs_dir / manual_tag
-    manual_params = {"run_id": manual_tag, "case": "manual", "input": manual_inp, "lmp": lmp}
-    include_manual = ["case", "input", "lmp"]
-    manual_sig = canonical_params(manual_params, include_keys=include_manual)
-    existing_manual = index_existing_runs(runs_dir, run_glob=manual_tag, include_keys=include_manual).get(manual_sig)
-    manual_time_s = None
+    out_json = runs_dir / str(args.out_json)
 
-    if existing_manual == manual_tag and run_complete(manual_dir):
-        recorded = read_json(manual_dir / "run_result.json")
-        recorded_time = recorded.get("time_s")
-        if isinstance(recorded_time, (int, float)) and recorded_time > 0:
-            manual_time_s = float(recorded_time)
-            print(
-                f"SKIP: {manual_tag} existing params match input={manual_inp} "
-                f"(using recorded time={manual_time_s:.2f}s)"
-            )
-        else:
-            print(
-                f"INFO: {manual_tag} exists but has no usable recorded runtime; "
-                f"re-running to derive timeout"
-            )
+    if args.collect:
+        summary = collect_summary(runs_dir=runs_dir, out_json=out_json, manual_tag=manual_tag)
+        print(f"WROTE: {out_json}  runs={len(summary.get('runs', []))}")
+        return 0
 
-    if manual_time_s is None:
-        manual_res = run_lammps_job(
-            {
-                "run_id": manual_tag,
-                "run_dir": str(manual_dir),
-                "lmp": lmp,
-                "input": manual_inp,
-                "tag": manual_tag,
-                "vars": {},
-                "params": manual_params,
-                "meta": {},
-                "suppress_output": True,
-                "timeout_s": None,
-            }
+    cfg = load_slurm_config(args.config)
+
+    manual_out = _slurm_out_status(manual_dir)
+    manual_log_time_s = _manual_time_seconds(manual_dir)
+
+    if args.manual:
+        # Manual job walltime comes from config; its *measured* runtime is parsed from its log on later runs.
+        manual_time_limit = str(cfg["TIME_LIMIT"])
+        lammps_cmd = (
+            f"{args.lmp} -k on t 1 -sf kk -in {args.manual_input} "
+            f"-var tag {manual_tag} -log {manual_dir / 'lammps.log'}"
         )
-        if manual_res.get("timed_out"):
-            manual_status = f"TIMEOUT({manual_res.get('timeout_s')}s)"
-        else:
-            manual_status = "OK" if manual_res["returncode"] == 0 else f"FAIL(rc={manual_res['returncode']})"
-        print(f"DONE: {manual_res['run_id']} {manual_status} time={manual_res['time_s']:.2f}s input={manual_inp}")
-        if manual_res["returncode"] == 0 and not manual_res.get("timed_out"):
-            manual_time_s = float(manual_res["time_s"])
+        slurm_path = _write_manual_slurm(
+            run_dir=manual_dir,
+            partition=str(cfg["PARTITION"]),
+            time_limit=manual_time_limit,
+            account=str(cfg["ACCOUNT"]),
+            lammps_cmd=lammps_cmd,
+        )
+        (manual_dir / "params.json").write_text(
+            json.dumps(
+                {
+                    "run_id": manual_tag,
+                    "case": "manual",
+                    "lmp": str(args.lmp),
+                    "input": str(args.manual_input),
+                    "slurm": {
+                        "partition": str(cfg["PARTITION"]),
+                        "time_limit": manual_time_limit,
+                        "account": str(cfg["ACCOUNT"]),
+                    },
+                },
+                indent=2,
+            )
+            + "\n"
+        )
+        print(f"Wrote manual job: {slurm_path}")
+        if args.submit:
+            note = _submit_sbatch(slurm_path)
+            (manual_dir / "submit_result.json").write_text(
+                json.dumps({"note": note, "job_slurm": str(slurm_path)}, indent=2) + "\n"
+            )
+            print(f"Submitted {slurm_path}: {note}")
+            if prompt_yes_no("Monitor Slurm jobs now?", default=False):
+                monitor_slurm_jobs_interactive()
+        return 0
 
-    rounded_manual_s = math.ceil(float(manual_time_s) / 60.0) * 60.0
-    sweep_timeout_s = rounded_manual_s + timeout_padding_s
-    print(
-        f"INFO: sweep timeout set from manual runtime: "
-        f"ceil({manual_time_s:.2f}s to nearest minute)={rounded_manual_s:.2f}s "
-        f"+ {timeout_padding_s:.0f}s = {sweep_timeout_s:.2f}s"
+    # Require the manual baseline to have been run via --manual and completed.
+    if manual_log_time_s is None:
+        if manual_out.get("state") in {"timeout", "error"}:
+            raise SystemExit(
+                f"Manual baseline appears to have {manual_out.get('state')}ed.\n"
+                f"Check: {manual_out.get('path')}\n"
+                f"Then re-run: python collect_metrics.py --manual --submit"
+            )
+        raise SystemExit(
+            f"Manual baseline runtime not found under: {manual_dir / 'lammps.log'}\n"
+            f"Run: python collect_metrics.py --manual --submit  (then wait for it to finish)"
+        )
+
+    time_limit = _slurm_time_from_seconds(manual_log_time_s + float(args.time_pad_s or 0.0))
+    print(f"INFO: derived Slurm --time={time_limit} from manual runtime")
+
+    # 2) Generate scripts (optionally submit).
+    lammps_cmd_template = LAMMPS_COMMAND_TEMPLATE.replace("mylammps/build/lmp", str(args.lmp))
+
+    n_written, submitted = generate_slurm_scripts(
+        runs_dir=runs_dir,
+        ks_list=parse_csv(args.ks),
+        kacc_list=parse_csv(args.kacc),
+        dcut_list=parse_csv_ints(args.dcut),
+        cores_list=parse_csv_ints(args.cores),
+        cores_per_node=int(cfg["CORES_PER_NODE"]),
+        partition=str(cfg["PARTITION"]),
+        time_limit=time_limit,
+        account=str(cfg["ACCOUNT"]),
+        lammps_command_template=lammps_cmd_template,
+        slurm_template=SLURM_TEMPLATE,
+        submit=bool(args.submit),
     )
 
-    for run_id, ks, combo_dict in skipped:
-        print(
-            f"SKIP: {run_id} existing params match "
-            f"ks={ks} "
-            + " ".join(f"{k}={combo_dict[k]}" for k in sweep_keys)
-        )
-
-    sweep_jobs: list[dict] = []
-    for run_id, ks, combo_dict in jobs:
-        run_dir = runs_dir / run_id
-        params = {"run_id": run_id, "ks": ks, "input": inp, "lmp": lmp, **combo_dict}
-        vars_dict = {"ks": ks, **{k: combo_dict[k] for k in sweep_keys}}
-        sweep_jobs.append(
-            {
-                "run_id": run_id,
-                "run_dir": str(run_dir),
-                "lmp": lmp,
-                "input": inp,
-                "tag": run_id,
-                "vars": vars_dict,
-                "params": params,
-                "meta": {"ks": ks, **combo_dict},
-                "suppress_output": True,
-                "timeout_s": sweep_timeout_s,
-            }
-        )
-
-    if sweep_jobs:
-        n_procs = min(max_parallel, len(sweep_jobs))
-        with Pool(processes=n_procs) as pool:
-            for res in pool.imap_unordered(run_lammps_job, sweep_jobs):
-                if res.get("timed_out"):
-                    status = f"TIMEOUT({float(sweep_timeout_s):.2f}s)"
-                else:
-                    status = "OK" if res["returncode"] == 0 else f"FAIL(rc={res['returncode']})"
-                print(
-                    f"DONE: {res['run_id']} {status} time={res['time_s']:.2f}s "
-                    f"ks={res['ks']} "
-                    + " ".join(f"{k}={res[k]}" for k in sweep_keys)
-                )
-
-    log_dir = runs_dir / "logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
-
-    for run_log in runs_dir.glob("run_*/lammps.log"):
-        (log_dir / f"{run_log.parent.name}.log").write_text(run_log.read_text(errors="replace"))
-
-    manual_log = runs_dir / manual_tag / "lammps.log"
-    if manual_log.exists():
-        (log_dir / f"{manual_tag}.log").write_text(manual_log.read_text(errors="replace"))
-
-    out_json = runs_dir / "benchmark_summary.json"
-    summary = collect_logs_to_json(log_dir, out_json, runs_dir=runs_dir)
-    print(f"WROTE: {out_json}  runs={len(summary['runs'])}")
+    print(f"Wrote {n_written} Slurm scripts under: {runs_dir}")
+    if args.submit:
+        for p, out in submitted:
+            print(f"Submitted {p}: {out}")
+        if submitted and prompt_yes_no("Monitor Slurm jobs now?", default=False):
+            monitor_slurm_jobs_interactive()
     return 0
 
 
