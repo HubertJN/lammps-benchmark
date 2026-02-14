@@ -5,7 +5,7 @@ from plot_utils import generate_performance_review
 # -------------------- Paths / settings --------------------
 
 RUNS_DIR = Path("runs")
-JSON_PATH = RUNS_DIR / "benchmark_summary.json"
+JSON_PATH = RUNS_DIR / "metrics_summary.json"
 OUT_PDF = RUNS_DIR / "performance_review.pdf"
 
 TOP_N_RUNS = 3          # top N by timesteps/s
