@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import time
 import json
 import math
 import re
 import shutil
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -64,7 +66,26 @@ export OPENBLAS_NUM_THREADS=1
 
 srun --cpu-bind=cores {lammps_cmd}
 """
+def wait_job_afterok(jobid: str, poll_s: int = 10) -> bool:
+    sacct = shutil.which("sacct")
+    squeue = shutil.which("squeue")
+    if not (sacct and squeue):
+        raise SystemExit("Need sacct and squeue in PATH to wait for job completion")
 
+    while True:
+        # If still in queue, keep waiting
+        r = subprocess.run([squeue, "-h", "-j", jobid, "-o", "%T"], text=True, capture_output=True)
+        state = (r.stdout or "").strip()
+        if state:
+            time.sleep(poll_s)
+            continue
+
+        # Not in squeue -> finished; ask accounting for final state
+        r = subprocess.run([sacct, "-n", "-X", "-j", jobid, "-o", "State"], text=True, capture_output=True)
+        states = [s.strip() for s in (r.stdout or "").splitlines() if s.strip()]
+        # take first non-empty; sacct may show job + steps
+        final = states[0].split()[0] if states else ""
+        return final == "COMPLETED"
 
 def _slurm_time_from_seconds(seconds: float) -> str:
     # Slurm expects a walltime; safest is to round up to full minutes.
@@ -201,8 +222,9 @@ def _submit_sbatch(slurm_path: Path) -> str:
     sbatch = shutil.which("sbatch")
     if not sbatch:
         raise SystemExit("--submit requested but 'sbatch' was not found in PATH")
-    r = subprocess.run([sbatch, str(slurm_path)], check=True, text=True, capture_output=True)
-    return (r.stdout or r.stderr).strip()
+    # --parsable prints just the jobid (or jobid;cluster)
+    r = subprocess.run([sbatch, "--parsable", str(slurm_path)], check=True, text=True, capture_output=True)
+    return (r.stdout or "").strip().split(";")[0]
 
 
 def collect_summary(*, runs_dir: Path, out_json: Path, manual_tag: str) -> dict:
@@ -323,9 +345,11 @@ def main(argv: list[str] | None = None) -> int:
                 json.dumps({"note": note, "job_slurm": str(slurm_path)}, indent=2) + "\n"
             )
             print(f"Submitted {slurm_path}: {note}")
-            if prompt_yes_no("Monitor Slurm jobs now?", default=False):
-                monitor_slurm_jobs_interactive()
-        return 0
+            
+            print("Waiting for manual job to complete...")
+            ok = wait_job_afterok(note)
+            if not ok:
+                raise SystemExit(f"Manual job {note} did not complete successfully")
 
     # Require the manual baseline to have been run via --manual and completed.
     if manual_log_time_s is None:
@@ -359,6 +383,7 @@ def main(argv: list[str] | None = None) -> int:
         lammps_command_template=lammps_cmd_template,
         slurm_template=SLURM_TEMPLATE,
         submit=bool(args.submit),
+        mode="collect_metrics",
     )
 
     print(f"Wrote {n_written} Slurm scripts under: {runs_dir}")
