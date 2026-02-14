@@ -36,7 +36,7 @@ SLURM_TEMPLATE = """#!/bin/bash
 #SBATCH --mem-per-cpu=3850
 #SBATCH --partition={partition}
 #SBATCH --time={time_limit}
-#SBATCH --account={account}
+
 
 module purge
 module load GCC/13.2.0 OpenMPI/4.1.6 IPython FFTW
