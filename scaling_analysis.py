@@ -85,9 +85,6 @@ def main(argv: list[str] | None = None) -> int:
     if args.submit:
         for p, out in submitted:
             print(f"Submitted {p}: {out}")
-
-        if submitted and prompt_yes_no("Monitor Slurm jobs now?", default=False):
-            monitor_slurm_jobs_interactive()
     return 0
 
 
