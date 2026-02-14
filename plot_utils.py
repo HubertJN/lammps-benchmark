@@ -48,6 +48,14 @@ def _parse_hms_walltime_s(s: str | None) -> float | None:
     h, m, sec = nums
     return h * 3600.0 + m * 60.0 + sec
 
+
+def _is_missing_walltime(run: dict) -> bool:
+    wt = run.get("total_wall_time")
+    if wt is None:
+        return True
+    s = str(wt).strip().lower()
+    return (not s) or s in {"n/a", "na", "none", "null"}
+
 def max_wall_time(summary: dict) -> tuple[float | None, str | None, dict | None]:
     """Return (max_seconds, tag, run_obj) across all finished runs in summary."""
     best_s: float | None = None
@@ -57,8 +65,9 @@ def max_wall_time(summary: dict) -> tuple[float | None, str | None, dict | None]
         tag = r.get("tag")
         runner = r.get("runner") or {}
 
-        # Only consider runs that finished (exclude timeouts; and exclude nonzero returncode if known).
-        if runner.get("timed_out") is True:
+        # Only consider runs that finished.
+        # Treat missing walltime as timed out / incomplete.
+        if _is_missing_walltime(r):
             continue
         if runner.get("returncode") is not None and runner.get("returncode") != 0:
             continue
@@ -122,6 +131,8 @@ def extract_production_size_from_run(run: dict, *, runs_dir: Path) -> tuple[int 
 def top_runs_by_tps(runs, n: int):
     scored = []
     for r in runs:
+        if _is_missing_walltime(r):
+            continue
         tps = safe_float((r.get("performance") or {}).get("timesteps_per_s"))
         if tps is None:
             continue
@@ -134,9 +145,13 @@ def load_params_for_tag(runs_dir: Path, tag: str) -> dict:
     """Load runs/<tag>/params.json. Returns {} if missing/unreadable."""
     p = runs_dir / tag / "params.json"
     try:
-        return json.loads(p.read_text())
+        raw = json.loads(p.read_text())
     except Exception:
         return {}
+
+    # Only keep params that the report actually uses.
+    keep = {"input", "case", "ks", "kacc", "dcut"}
+    return {k: raw.get(k) for k in keep if k in raw}
 
 
 def collect_param_columns(params_list: list[dict]) -> list[str]:
@@ -475,6 +490,8 @@ def best_runs_by_param(runs, params_by_tag: dict, param_key: str):
     """Return one run per unique param_key, choosing the highest timesteps/s."""
     best = {}
     for r in runs:
+        if _is_missing_walltime(r):
+            continue
         tps = safe_float((r.get("performance") or {}).get("timesteps_per_s"))
         if tps is None:
             continue
@@ -646,10 +663,8 @@ def build_pdf(
     manual_energy = extract_final_total_energy_from_run(manual_run, runs_dir=runs_dir) if manual_run else None
 
     params_list = [params_by_tag.get(r.get("tag", "unknown"), {}) for r in table_runs]
-    param_cols = collect_param_columns(params_list)
-    param_cols = [c for c in param_cols if c not in {"kacc", "ks", "dcut"}]
 
-    header = ["Rank", "kacc", "ks", "dcut", "Tag", "timesteps/s", "speedup", "ΔE%", "walltime"] + param_cols
+    header = ["Rank", "kacc", "ks", "dcut", "Tag", "timesteps/s", "speedup", "ΔE%", "walltime"]
     rows = [header]
 
     for i, r in enumerate(table_runs, start=1):
@@ -674,10 +689,9 @@ def build_pdf(
         kacc_s = format_param_value(p.get("kacc"))
         ks_s = format_param_value(p.get("ks") or (r.get("kspace") or {}).get("style"))
         dcut_s = format_param_value(p.get("dcut"))
-        row = [str(i), kacc_s, ks_s, dcut_s, tag, tps_s, speedup_s, energy_diff_s, walltime] + [
-            format_param_value(p.get(k)) for k in param_cols
-        ]
+        row = [str(i), kacc_s, ks_s, dcut_s, tag, tps_s, speedup_s, energy_diff_s, walltime]
         rows.append(row)
+
 
     page_w = A4[0] - (doc.leftMargin + doc.rightMargin)
     base_widths = [
@@ -691,9 +705,7 @@ def build_pdf(
         0.75 * inch,  # ΔE%
         0.80 * inch,  # walltime
     ]
-    remaining = page_w - sum(base_widths)
-    extra_w = remaining / max(1, len(param_cols))
-    col_widths = base_widths + [extra_w] * len(param_cols)
+    col_widths = base_widths
 
     tbl = Table(rows, colWidths=col_widths, hAlign="LEFT")
     tbl.setStyle(
@@ -821,8 +833,7 @@ def build_pdf(
 
     timed_out = []
     for r in (summary.get("runs") or []):
-        runner = r.get("runner") or {}
-        if runner.get("timed_out") is True:
+        if _is_missing_walltime(r):
             timed_out.append(r)
 
     story.append(Spacer(1, 0.18 * inch))
@@ -843,7 +854,7 @@ def generate_performance_review(
     manual_tag: str = "manual",
     sweep_input: str = "in.performance_test.lmp",
 ):
-    json_path = json_path or (runs_dir / "benchmark_summary.json")
+    json_path = json_path or (runs_dir / "metrics_summary.json")
     out_pdf = out_pdf or (runs_dir / "performance_review.pdf")
 
     summary = json.loads(json_path.read_text())
@@ -863,11 +874,12 @@ def generate_performance_review(
             continue
         p = params_by_tag.get(tag, {})
         if p.get("input") == sweep_input:
-            sweep_runs.append(r)
+            if not _is_missing_walltime(r):
+                sweep_runs.append(r)
 
     top_runs = top_runs_by_tps(sweep_runs, top_n_runs)
     if not top_runs:
-        raise SystemExit("No runs with performance.timesteps_per_s found in benchmark_summary.json.")
+        raise SystemExit("No runs with performance.timesteps_per_s found in metrics_summary.json.")
 
     table_runs = best_runs_by_param(sweep_runs, params_by_tag, param_key="kacc")
     if not table_runs:
