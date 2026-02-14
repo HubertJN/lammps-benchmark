@@ -29,7 +29,7 @@ LAMMPS_COMMAND_TEMPLATE = (
 
 SLURM_TEMPLATE = """#!/bin/bash
 
-#SBATCH --output={log_dir}/slurm-%j.out
+#SBATCH --output={log_dir}/slurm.out
 #SBATCH --nodes={nodes}
 #SBATCH --ntasks-per-node={ntasks_per_node}
 #SBATCH --cpus-per-task=1
