@@ -78,6 +78,7 @@ def main(argv: list[str] | None = None) -> int:
         lammps_command_template=LAMMPS_COMMAND_TEMPLATE,
         slurm_template=SLURM_TEMPLATE,
         submit=bool(args.submit),
+        mode="scaling_analysis",
     )
 
     print(f"Wrote {n_written} Slurm scripts under: {args.runs_dir}")
