@@ -198,7 +198,7 @@ def generate_slurm_scripts(
     for ks, kacc, dcut, total_cores in product(ks_list, kacc_list, dcut_list, cores_list):
         total_cores = int(total_cores)
         if mode == "collect_metrics":
-            tag = f"runs_{i:06d}"
+            tag = f"run_{i:06d}"
             i += 1
         elif mode == "scaling_analysis":
             tag = f"scaling_{total_cores:06d}"
