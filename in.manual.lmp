@@ -163,7 +163,7 @@ set               type 5 dipole 0 0 ${mudipole44} #setting dipole to z-axis.
 kspace_style      ewald/dipole 1.0e-4 # ewald summation for long range dipole interactions in periodic boundary conditions
 
 
-minimize 	      1e-1 1e-1 3000 3000			               # quick energy minimization so that no overlaps
+minimize 	      1e-2 1e-2 3000 3000			               # quick energy minimization so that no overlaps
 
 
 
