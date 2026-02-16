@@ -16,6 +16,7 @@ PARAMS = {
     "kacc": ["1.0e-4"],
     "dcut": [6],
     "cores": [1, 2, 4, 8, 16, 32, 48],
+    "size": ["4100,20.83", "8200,26.25", "16400,33.06"], # Ensuring num atoms is divisible by 5
 }
 
 LAMMPS_COMMAND_TEMPLATE = (
@@ -23,6 +24,8 @@ LAMMPS_COMMAND_TEMPLATE = (
     "-var ks {ks} "
     "-var kacc {kacc} "
     "-var dcut {dcut} "
+    "-var atoms {atoms} "
+    "-var side {side} "
     "-var tag {tag} "
     "-log {log_path}"
 )
@@ -61,6 +64,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--kacc", default=",".join(PARAMS["kacc"]), help="Comma-separated kspace accuracies")
     ap.add_argument("--dcut", default=",".join(str(x) for x in PARAMS["dcut"]), help="Comma-separated dcut values")
     ap.add_argument("--cores", default=",".join(str(x) for x in PARAMS["cores"]), help="Comma-separated core counts")
+    ap.add_argument("--size", default=[x for x in PARAMS["size"]], help="Semicolon-separated 'atoms,side' pairs (e.g. '1000,20.0;2000,25.0')")
     args = ap.parse_args(argv)
 
     cfg = load_slurm_config(args.config)
@@ -70,6 +74,7 @@ def main(argv: list[str] | None = None) -> int:
         ks_list=parse_csv(args.ks),
         kacc_list=parse_csv(args.kacc),
         dcut_list=parse_csv_ints(args.dcut),
+        size_list=args.size,
         cores_list=parse_csv_ints(args.cores),
         cores_per_node=int(cfg["CORES_PER_NODE"]),
         partition=str(cfg["PARTITION"]),

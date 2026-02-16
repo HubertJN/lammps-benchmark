@@ -11,14 +11,14 @@ variable outdir string runs/${tag}
 shell mkdir ${outdir}
 
 # specifiy some variables
-variable          npart1        equal   3200
+variable          npart1        equal   ${atoms}
 variable          npart2        equal   ${npart1}
 variable          npart3        equal   ${npart1}
 variable          npart4        equal   ${npart1}
 variable          npart5        equal   ${npart1}
 variable          npart         equal   (${npart1}+${npart2}+${npart3}+${npart4}+${npart5})
 
-variable          boxside       equal   32.7943 #18.77005   #  17.65015    #   10.32187 # 10.32187  # 18.77005
+variable          boxside       equal   ${side} #18.77005   #  17.65015    #   10.32187 # 10.32187  # 18.77005
 variable          rho           equal   ${npart}/(${boxside}*${boxside}*${boxside})
 variable          temper        equal   1.0
 

@@ -154,6 +154,7 @@ def generate_slurm_scripts(
     kacc_list: list[str],
     dcut_list: list[int],
     cores_list: list[int],
+    size_list: list[str],
     cores_per_node: int,
     partition: str,
     time_limit: str,
@@ -195,112 +196,122 @@ def generate_slurm_scripts(
     }
 
     i = 0
-    for ks, kacc, dcut, total_cores in product(ks_list, kacc_list, dcut_list, cores_list):
-        total_cores = int(total_cores)
-        if mode == "collect_metrics":
-            tag = f"run_{i:06d}"
-            i += 1
-        elif mode == "scaling_analysis":
-            tag = f"scaling_{total_cores:06d}"
-        run_dir = runs_dir / tag
-        log_path = run_dir / "lammps.log"
+    for size in size_list:
+        atoms, side = size.split(",")
+        atoms = int(atoms.strip())
+        side = float(side.strip())
+        for ks, kacc, dcut, total_cores in product(ks_list, kacc_list, dcut_list, cores_list):
+            total_cores = int(total_cores)
+            if mode == "collect_metrics":
+                tag = f"run_{i:06d}"
+                i += 1
+            elif mode == "scaling_analysis":
+                tag = f"scaling_{atoms:06d}_{total_cores:03d}"
+            run_dir = runs_dir / tag
+            log_path = run_dir / "lammps.log"
 
-        run_dir.mkdir(parents=True, exist_ok=True)
+            run_dir.mkdir(parents=True, exist_ok=True)
 
-        nodes = max(1, math.ceil(total_cores / int(cores_per_node)))
-        ntasks_per_node = max(1, math.ceil(total_cores / nodes))
+            nodes = max(1, math.ceil(total_cores / int(cores_per_node)))
+            ntasks_per_node = max(1, math.ceil(total_cores / nodes))
 
-        lammps_cmd = lammps_command_template.format(
-            ks=ks,
-            kacc=kacc,
-            dcut=dcut,
-            tag=tag,
-            log_path=log_path,
-        )
+            lammps_cmd = lammps_command_template.format(
+                ks=ks,
+                kacc=kacc,
+                dcut=dcut,
+                tag=tag,
+                atoms=str(int(int(atoms)/5)),  # LAMMPS input script will replicate to get desired total atoms
+                side=side,
+                log_path=log_path,
+            )
 
-        lmp_path, inp_path = _extract_lammps_paths(lammps_cmd)
+            lmp_path, inp_path = _extract_lammps_paths(lammps_cmd)
 
-        slurm_script = slurm_template.format(
-            run_dir=str(run_dir),
-            nodes=nodes,
-            ntasks_per_node=ntasks_per_node,
-            partition=partition,
-            time_limit=time_limit,
-            account=account,
-            log_dir=str(run_dir),
-            lammps_cmd=lammps_cmd,
-        )
+            slurm_script = slurm_template.format(
+                run_dir=str(run_dir),
+                nodes=nodes,
+                ntasks_per_node=ntasks_per_node,
+                partition=partition,
+                time_limit=time_limit,
+                account=account,
+                log_dir=str(run_dir),
+                lammps_cmd=lammps_cmd,
+            )
 
-        slurm_script_path = run_dir / "job.slurm"
-        slurm_script_path.write_text(slurm_script)
-        n_written += 1
+            slurm_script_path = run_dir / "job.slurm"
+            slurm_script_path.write_text(slurm_script)
+            n_written += 1
 
-        params = {
-            "run_id": tag,
-            "case": "scaling",
-            "ks": ks,
-            "kacc": kacc,
-            "dcut": dcut,
-            "cores": total_cores,
-            "nodes": nodes,
-            "ntasks_per_node": ntasks_per_node,
-            "lmp": lmp_path,
-            "input": inp_path,
-            "log_path": str(log_path),
-            "slurm": {
-                "partition": partition,
-                "time_limit": time_limit,
-                "account": account,
-                "cores_per_node": int(cores_per_node),
-            },
-            "generator": {
-                "timestamp_utc": datetime.utcnow().isoformat(timespec="seconds") + "Z",
-                "tool": "scaling_analysis",
-            },
-            "machine": machine,
-        }
-        _write_json(run_dir / "params.json", params)
-
-        summary["runs"].append(
-            {
-                "tag": tag,
-                "run_dir": str(run_dir),
-                "job_slurm": str(slurm_script_path),
-                "params_json": str(run_dir / "params.json"),
-                "log_path": str(log_path),
+            params = {
+                "run_id": tag,
+                "case": "scaling",
                 "ks": ks,
                 "kacc": kacc,
                 "dcut": dcut,
+                "atoms": atoms,
+                "side": side,
                 "cores": total_cores,
                 "nodes": nodes,
                 "ntasks_per_node": ntasks_per_node,
+                "lmp": lmp_path,
+                "input": inp_path,
+                "log_path": str(log_path),
+                "slurm": {
+                    "partition": partition,
+                    "time_limit": time_limit,
+                    "account": account,
+                    "cores_per_node": int(cores_per_node),
+                },
+                "generator": {
+                    "timestamp_utc": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                    "tool": "scaling_analysis",
+                },
+                "machine": machine,
             }
-        )
+            _write_json(run_dir / "params.json", params)
 
-        if submit:
-            r = subprocess.run(
-                [sbatch, str(slurm_script_path)],
-                check=True,
-                text=True,
-                capture_output=True,
+            summary["runs"].append(
+                {
+                    "tag": tag,
+                    "run_dir": str(run_dir),
+                    "job_slurm": str(slurm_script_path),
+                    "params_json": str(run_dir / "params.json"),
+                    "log_path": str(log_path),
+                    "ks": ks,
+                    "kacc": kacc,
+                    "dcut": dcut,
+                    "atoms": atoms,
+                    "side": side,
+                    "cores": total_cores,
+                    "nodes": nodes,
+                    "ntasks_per_node": ntasks_per_node,
+                }
             )
-            out = (r.stdout or r.stderr).strip()
-            submitted.append((slurm_script_path, out))
-            submit_result = {
-                "timestamp_utc": datetime.utcnow().isoformat(timespec="seconds") + "Z",
-                "cmd": [sbatch, str(slurm_script_path)],
-                "returncode": int(r.returncode),
-                "stdout": (r.stdout or ""),
-                "stderr": (r.stderr or ""),
-                "note": out,
-            }
-            _write_json(run_dir / "submit_result.json", submit_result)
 
-            summary["runs"][-1]["submitted"] = True
-            summary["runs"][-1]["submit_result_json"] = str(run_dir / "submit_result.json")
-            summary["runs"][-1]["sbatch_note"] = out
-        else:
-            summary["runs"][-1]["submitted"] = False
+            if submit:
+                r = subprocess.run(
+                    [sbatch, str(slurm_script_path)],
+                    check=True,
+                    text=True,
+                    capture_output=True,
+                )
+                out = (r.stdout or r.stderr).strip()
+                submitted.append((slurm_script_path, out))
+                submit_result = {
+                    "timestamp_utc": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                    "cmd": [sbatch, str(slurm_script_path)],
+                    "returncode": int(r.returncode),
+                    "stdout": (r.stdout or ""),
+                    "stderr": (r.stderr or ""),
+                    "note": out,
+                }
+                _write_json(run_dir / "submit_result.json", submit_result)
+
+                summary["runs"][-1]["submitted"] = True
+                summary["runs"][-1]["submit_result_json"] = str(run_dir / "submit_result.json")
+                summary["runs"][-1]["sbatch_note"] = out
+            else:
+                summary["runs"][-1]["submitted"] = False
 
     # One-file summary of all generated jobs under runs_dir.
     if mode == "collect_metrics":
