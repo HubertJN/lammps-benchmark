@@ -8,7 +8,7 @@ from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, PageBreak
 
-from reportlab.graphics.shapes import Drawing, String, Group
+from reportlab.graphics.shapes import Drawing, String, Group, Line
 from reportlab.graphics.charts.piecharts import Pie
 from reportlab.graphics.charts.lineplots import LinePlot
 from reportlab.graphics.widgets.markers import makeMarker
@@ -154,6 +154,31 @@ def load_params_for_tag(runs_dir: Path, tag: str) -> dict:
     return {k: raw.get(k) for k in keep if k in raw}
 
 
+def _find_any_scaling_params(runs_dir: Path) -> dict:
+    """Best-effort extraction of common scaling parameters for labeling.
+
+    Tries to read kacc/ks/dcut from the first available scaling params.json.
+    Supports both old tags (scaling_000048) and new tags (scaling_004100_048).
+    """
+
+    candidates = []
+    candidates.extend(sorted(runs_dir.glob("scaling_*_*/params.json")))
+    candidates.extend(sorted(runs_dir.glob("scaling_*/params.json")))
+    for p in candidates:
+        try:
+            raw = json.loads(p.read_text())
+        except Exception:
+            continue
+        out = {
+            "kacc": raw.get("kacc"),
+            "ks": raw.get("ks"),
+            "dcut": raw.get("dcut"),
+        }
+        if any(v is not None for v in out.values()):
+            return out
+    return {}
+
+
 def collect_param_columns(params_list: list[dict]) -> list[str]:
     exclude = {"run_id", "input", "lmp", "log_path", "run_dir", "time_s", "returncode"}
     keys = set()
@@ -263,6 +288,119 @@ def _find_latest_scaling_summary(runs_dir: Path) -> Path | None:
     return candidates[0]
 
 
+def _parse_scaling_dir_name(name: str) -> tuple[int, int] | None:
+    """Parse scaling directory names.
+
+    New format:
+      scaling_<atoms>_<cores>
+      e.g. scaling_004100_048
+    """
+
+    m = re.match(r"^scaling_(\d+)_([0-9]+)$", str(name))
+    if not m:
+        return None
+    try:
+        atoms = int(m.group(1))
+        cores = int(m.group(2))
+    except Exception:
+        return None
+    return atoms, cores
+
+
+def _load_scaling_speedup_series(runs_dir: Path) -> dict[int, dict[str, object]]:
+    """Return scaling series grouped by test case.
+
+    Output:
+      {atoms_case: {"points": [(cores, speedup), ...], "base_cores": int, "base_tps": float}}
+
+    Preferred source: directory names scaling_<atoms>_<cores> with lammps.log.
+    Fallback: scaling_slurm_summary.json (single-series only, atoms_case=0).
+    """
+
+    best_tps_by_case_cores: dict[int, dict[int, float]] = {}
+
+    # 1) Preferred: scan directories by naming convention.
+    for d in sorted(runs_dir.glob("scaling_*_*")):
+        if not d.is_dir():
+            continue
+        parsed = _parse_scaling_dir_name(d.name)
+        if parsed is None:
+            continue
+        atoms_case, cores = parsed
+        log_path = d / "lammps.log"
+        if not log_path.exists():
+            continue
+        try:
+            tps = _extract_last_timesteps_per_s_from_log_text(log_path.read_text(errors="replace"))
+        except Exception:
+            continue
+        if tps is None or tps <= 0:
+            continue
+
+        by_cores = best_tps_by_case_cores.setdefault(int(atoms_case), {})
+        prev = by_cores.get(int(cores))
+        if prev is None or float(tps) > float(prev):
+            by_cores[int(cores)] = float(tps)
+
+    if best_tps_by_case_cores:
+        out: dict[int, dict[str, object]] = {}
+        for atoms_case in sorted(best_tps_by_case_cores.keys()):
+            by_cores = best_tps_by_case_cores[atoms_case]
+            if not by_cores:
+                continue
+            base_cores = min(by_cores.keys())
+            base_tps = by_cores.get(base_cores)
+            if base_tps is None or base_tps <= 0:
+                continue
+            points = [(c, by_cores[c] / base_tps) for c in sorted(by_cores.keys())]
+            out[int(atoms_case)] = {"points": points, "base_cores": int(base_cores), "base_tps": float(base_tps)}
+        return out
+
+    # 2) Fallback: old single-series summary.
+    scaling_path = _find_latest_scaling_summary(runs_dir)
+    if scaling_path is None:
+        return {}
+
+    try:
+        scaling = json.loads(scaling_path.read_text())
+    except Exception:
+        return {}
+
+    best_tps_by_cores: dict[int, float] = {}
+    for r in (scaling.get("runs") or []):
+        try:
+            cores = int(r.get("cores"))
+        except Exception:
+            continue
+
+        log_path = r.get("log_path")
+        p = _resolve_log_path(log_path, runs_dir=runs_dir)
+        if p is None or not p.exists():
+            continue
+
+        try:
+            tps = _extract_last_timesteps_per_s_from_log_text(p.read_text(errors="replace"))
+        except Exception:
+            continue
+        if tps is None or tps <= 0:
+            continue
+
+        prev = best_tps_by_cores.get(cores)
+        if prev is None or tps > prev:
+            best_tps_by_cores[cores] = float(tps)
+
+    if not best_tps_by_cores:
+        return {}
+
+    base_cores = min(best_tps_by_cores.keys())
+    base_tps = best_tps_by_cores.get(base_cores)
+    if base_tps is None or base_tps <= 0:
+        return {}
+
+    points = [(c, best_tps_by_cores[c] / base_tps) for c in sorted(best_tps_by_cores.keys())]
+    return {0: {"points": points, "base_cores": int(base_cores), "base_tps": float(base_tps)}}
+
+
 def _load_scaling_speedup_points(runs_dir: Path) -> tuple[list[tuple[int, float]], int | None, float | None]:
     """Return (points, base_cores, base_tps).
 
@@ -314,6 +452,167 @@ def _load_scaling_speedup_points(runs_dir: Path) -> tuple[list[tuple[int, float]
     return points, base_cores, base_tps
 
 
+def make_scaling_speedup_plot_by_case(
+    *,
+    series: dict[int, dict[str, object]],
+    title: str = "Scaling: speedup vs cores (by test case)",
+    width: float = 480,
+    height: float = 260,
+) -> Drawing:
+    """Plot speedup curves per test case.
+
+    series keys are interpreted as atom counts (from scaling_<atoms>_<cores>).
+    """
+
+    d = Drawing(width, height)
+    d.add(String(width / 2, height - 14, title, textAnchor="middle", fontSize=11))
+
+    if not series:
+        d.add(String(width / 2, height / 2, "No scaling results found.", textAnchor="middle", fontSize=10))
+        return d
+
+    # Prepare plot data.
+    case_keys = sorted(series.keys())
+    data: list[list[tuple[float, float]]] = []
+    plotted_cases: list[int] = []
+    x_union: set[int] = set()
+    y_max = 1.0
+
+    for k in case_keys:
+        pts = (series.get(k) or {}).get("points") or []
+        try:
+            pts_list = [(float(c), float(s)) for c, s in pts]
+        except Exception:
+            continue
+        if not pts_list:
+            continue
+        data.append(pts_list)
+        plotted_cases.append(int(k))
+        for c, s in pts_list:
+            x_union.add(int(c))
+            if s > y_max:
+                y_max = float(s)
+
+    if not data or not x_union:
+        d.add(String(width / 2, height / 2, "No scaling results found.", textAnchor="middle", fontSize=10))
+        return d
+
+    x_vals = sorted(x_union)
+    min_x, max_x = min(x_vals), max(x_vals)
+
+    # If all cases share the same base_cores, include a single ideal line.
+    base_cores_set = set()
+    for k in plotted_cases:
+        try:
+            base_cores_set.add(int((series.get(k) or {}).get("base_cores") or 0))
+        except Exception:
+            pass
+    add_ideal = len(base_cores_set) == 1 and next(iter(base_cores_set)) > 0
+
+    lp = LinePlot()
+    lp.x = 52
+    lp.y = 42
+    lp.width = width - 74
+    lp.height = height - 86
+    lp.data = data
+
+    lp.xValueAxis.valueMin = float(min_x)
+    lp.xValueAxis.valueMax = float(max_x)
+    lp.xValueAxis.valueSteps = [float(v) for v in x_vals]
+    lp.xValueAxis.labelTextFormat = '%d'
+    lp.xValueAxis.labels.fontSize = 8
+
+    lp.yValueAxis.valueMin = 1.0
+    lp.yValueAxis.valueMax = max(1.1, float(y_max) * 1.15)
+    lp.yValueAxis.labels.fontSize = 8
+
+    # Add an ideal scaling line, truncated so it does not extend beyond the axes.
+    ideal_idx = None
+    if add_ideal:
+        base_cores = float(next(iter(base_cores_set)))
+        y_cap = float(lp.yValueAxis.valueMax)
+        x_intersect = y_cap * base_cores
+
+        if x_intersect >= float(min_x):
+            xs = [float(c) for c in x_vals if float(c) <= float(x_intersect) + 1e-9]
+            ideal = [(x, x / base_cores) for x in xs]
+
+            # If we intersect between two x ticks, add a final point on the top boundary.
+            if float(min_x) <= float(x_intersect) <= float(max_x):
+                if not ideal or abs(ideal[-1][0] - float(x_intersect)) > 1e-9:
+                    ideal.append((float(x_intersect), float(y_cap)))
+
+            if ideal:
+                lp.data = list(lp.data) + [ideal]
+                ideal_idx = len(lp.data) - 1
+
+    # Grid
+    for ax in (lp.xValueAxis, lp.yValueAxis):
+        if hasattr(ax, "visibleGrid"):
+            ax.visibleGrid = True
+        if hasattr(ax, "gridStrokeColor"):
+            ax.gridStrokeColor = colors.lightgrey
+        if hasattr(ax, "gridStrokeWidth"):
+            ax.gridStrokeWidth = 0.25
+
+    palette = [
+        colors.darkblue,
+        colors.darkgreen,
+        colors.darkred,
+        colors.purple,
+        colors.orange,
+        colors.brown,
+        colors.darkcyan,
+    ]
+
+    # Style case lines
+    n_case_lines = len(lp.data)
+    if ideal_idx is not None:
+        n_case_lines = len(lp.data) - 1
+
+    for i in range(n_case_lines):
+        color = palette[i % len(palette)]
+        lp.lines[i].strokeColor = color
+        lp.lines[i].strokeWidth = 1.5
+        lp.lines[i].symbol = makeMarker('FilledCircle')
+        lp.lines[i].symbol.size = 3.5
+
+    if ideal_idx is not None:
+        lp.lines[ideal_idx].strokeColor = colors.grey
+        lp.lines[ideal_idx].strokeWidth = 1.0
+        lp.lines[ideal_idx].strokeDashArray = [3, 2]
+
+    d.add(lp)
+
+    # Axis labels
+    g = Group()
+    g.add(String(0, 0, "Speedup (×)", textAnchor="middle", fontSize=9))
+    g.translate(30, height / 2)
+    g.rotate(90)
+    d.add(g)
+    d.add(String(width / 2, 14, "Cores", textAnchor="middle", fontSize=9))
+
+    # Legend: one entry per case
+    legend_x = lp.x + lp.width - 4
+    legend_y = height - 30
+    line_len = 14
+    dy = 12
+    for i, k in enumerate(plotted_cases[:n_case_lines]):
+        color = palette[i % len(palette)]
+        y = legend_y - i * dy
+        d.add(Line(legend_x - line_len, y, legend_x, y, strokeColor=color, strokeWidth=2))
+        # Treat key as atom-count test case.
+        label = f"atoms={int(k)}"
+        d.add(String(legend_x - line_len - 4, y - 3, label, textAnchor="end", fontSize=8, fillColor=color))
+
+    if ideal_idx is not None:
+        y = legend_y - n_case_lines * dy
+        d.add(Line(legend_x - line_len, y, legend_x, y, strokeColor=colors.grey, strokeWidth=1))
+        d.add(String(legend_x - line_len - 4, y - 3, "Ideal", textAnchor="end", fontSize=8, fillColor=colors.grey))
+
+    return d
+
+
 def make_scaling_speedup_plot(
     *,
     points: list[tuple[int, float]],
@@ -335,8 +634,7 @@ def make_scaling_speedup_plot(
     max_measured = max(s for _, s in points)
 
     actual = [(float(c), float(s)) for c, s in points]
-    ideal = [(float(c), float(c) / float(base_cores)) for c in x_vals]
-    max_ideal = max(float(c) / float(base_cores) for c in x_vals)
+    ideal_full = [(float(c), float(c) / float(base_cores)) for c in x_vals]
 
     def _nice_step(step: float) -> float:
         if step <= 0:
@@ -361,7 +659,6 @@ def make_scaling_speedup_plot(
     lp.y = 38
     lp.width = width - 70
     lp.height = height - 68
-    lp.data = [actual, ideal]
 
     lp.xValueAxis.valueMin = float(min_x)
     lp.xValueAxis.valueMax = float(max_x)
@@ -370,10 +667,27 @@ def make_scaling_speedup_plot(
     lp.xValueAxis.labels.fontSize = 8
 
     y_min = 1.0
-    y_max = max(1.1, float(max(max_measured, max_ideal)) * 1.1)
+    # Scale the axis from measured speedup only (not from the ideal line).
+    y_max = max(1.1, float(max_measured) * 1.1)
     lp.yValueAxis.valueMin = y_min
     lp.yValueAxis.valueMax = y_max
     lp.yValueAxis.labels.fontSize = 8
+
+    # Truncate the ideal line so it does not extend beyond the plot axes.
+    ideal = []
+    try:
+        y_cap = float(y_max)
+        base = float(base_cores)
+        x_cap = y_cap * base
+        xs = [float(c) for c in x_vals if float(c) <= float(x_cap) + 1e-9]
+        ideal = [(x, x / base) for x in xs]
+        if float(min_x) <= float(x_cap) <= float(max_x):
+            if not ideal or abs(ideal[-1][0] - float(x_cap)) > 1e-9:
+                ideal.append((float(x_cap), float(y_cap)))
+    except Exception:
+        ideal = ideal_full
+
+    lp.data = [actual, ideal]
 
     # Choose explicit y ticks so the grid and the right-side axis align.
     try:
@@ -623,6 +937,7 @@ def build_pdf(
     table_runs: list,
     pie_drawings: list[Drawing],
     scaling_drawing: Drawing | None,
+    scaling_drawings: list[Drawing] | None = None,
     params_by_tag: dict,
     runs_dir: Path,
     out_pdf: Path,
@@ -808,14 +1123,65 @@ def build_pdf(
         )
         story.append(pie_tbl)
 
-    # Optional scaling plot (if scaling_summary.json + logs exist).
-    if scaling_drawing is not None:
+    # Optional scaling plots.
+    # If multiple atom-count test cases exist, render one plot per case.
+    if scaling_drawings:
+        sp = _find_any_scaling_params(runs_dir)
+        kacc_s = format_param_value(sp.get("kacc"))
+        ks_s = format_param_value(sp.get("ks"))
+        dcut_s = format_param_value(sp.get("dcut"))
+        scaling_param_line = f"<b>kacc={kacc_s}</b>; <b>kstyle={ks_s}</b>; <b>dcut={dcut_s}</b>."
+
+        page_w3 = A4[0] - (doc.leftMargin + doc.rightMargin)
+        page_h3 = A4[1] - (doc.topMargin + doc.bottomMargin)
+        header_h = 1.00 * inch
+        per_plot_h = max(120.0, (page_h3 - header_h) / 2.0)
+
+        for page_i in range(0, len(scaling_drawings), 2):
+            story.append(PageBreak())
+            story.append(Paragraph("Scaling", styles["Heading2"]))
+            story.append(Spacer(1, 0.06 * inch))
+
+            if page_i == 0:
+                story.append(
+                    Paragraph(
+                        "Speedup vs cores from scaling runs (one plot per atom-count test case). "
+                        + scaling_param_line
+                        + " Axes scale from measured speedup (not ideal); the dotted ideal line is truncated to the axes. Right-side labels show timesteps/s.",
+                        body,
+                    )
+                )
+                story.append(Spacer(1, 0.64 * inch))
+
+            pair = scaling_drawings[page_i : page_i + 2]
+            for j, d0 in enumerate(pair):
+                # Fit each plot to page width and half-page height.
+                try:
+                    sx = page_w3 / float(getattr(d0, "width", page_w3) or page_w3)
+                    sy = per_plot_h / float(getattr(d0, "height", per_plot_h) or per_plot_h)
+                    s = min(sx, sy)
+                    if s and abs(s - 1.0) > 1e-6:
+                        d0.scale(s, s)
+                except Exception:
+                    pass
+                story.append(GraphicsFlowable(d0))
+                if j == 0 and len(pair) == 2:
+                    story.append(Spacer(1, 0.64 * inch))
+
+    elif scaling_drawing is not None:
+        sp = _find_any_scaling_params(runs_dir)
+        kacc_s = format_param_value(sp.get("kacc"))
+        ks_s = format_param_value(sp.get("ks"))
+        dcut_s = format_param_value(sp.get("dcut"))
+        scaling_param_line = f"<b>kacc={kacc_s}</b>; <b>kstyle={ks_s}</b>; <b>dcut={dcut_s}</b>."
+
         story.append(PageBreak())
         story.append(Paragraph("Scaling", styles["Heading2"]))
         story.append(Spacer(1, 0.06 * inch))
         story.append(
             Paragraph(
-                "Speedup vs cores from scaling runs (speedup computed from timesteps/s relative to the smallest core count).",
+                "Speedup vs cores from scaling runs (speedup computed from timesteps/s relative to the smallest core count). "
+                + scaling_param_line,
                 body,
             )
         )
@@ -896,10 +1262,42 @@ def generate_performance_review(
         pie_drawings.append(outs["drawing"])
 
     scaling_drawing = None
-    scaling_points, base_cores, base_tps = _load_scaling_speedup_points(runs_dir)
+    scaling_drawings: list[Drawing] | None = None
 
-    if scaling_points and base_cores is not None and base_tps is not None:
-        scaling_drawing = make_scaling_speedup_plot(points=scaling_points, base_cores=base_cores, base_tps=base_tps)
+    series = _load_scaling_speedup_series(runs_dir)
+    if series:
+        # If multiple atom-count test cases exist, render one plot per case.
+        if len(series) > 1:
+            scaling_drawings = []
+            for atoms_case in sorted(series.keys()):
+                obj = series.get(atoms_case) or {}
+                scaling_points = obj.get("points") or []
+                base_cores = obj.get("base_cores")
+                base_tps = obj.get("base_tps")
+                if scaling_points and base_cores is not None and base_tps is not None:
+                    scaling_drawings.append(
+                        make_scaling_speedup_plot(
+                            points=scaling_points,
+                            base_cores=int(base_cores),
+                            base_tps=float(base_tps),
+                            title=f"Scaling: atoms={int(atoms_case)}",
+                        )
+                    )
+
+        # Single series: keep existing plot style (includes right-side timesteps/s labels).
+        if not scaling_drawings:
+            only_key = next(iter(series.keys()))
+            obj = series.get(only_key) or {}
+            scaling_points = obj.get("points") or []
+            base_cores = obj.get("base_cores")
+            base_tps = obj.get("base_tps")
+            if scaling_points and base_cores is not None and base_tps is not None:
+                scaling_drawing = make_scaling_speedup_plot(
+                    points=scaling_points,
+                    base_cores=int(base_cores),
+                    base_tps=float(base_tps),
+                    title="Scaling: speedup vs cores",
+                )
 
     out_pdf.parent.mkdir(parents=True, exist_ok=True)
     build_pdf(
@@ -908,6 +1306,7 @@ def generate_performance_review(
         table_runs=table_runs,
         pie_drawings=pie_drawings,
         scaling_drawing=scaling_drawing,
+        scaling_drawings=scaling_drawings,
         params_by_tag=params_by_tag,
         runs_dir=runs_dir,
         out_pdf=out_pdf,
