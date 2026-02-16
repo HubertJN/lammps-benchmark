@@ -150,7 +150,7 @@ python scaling_analysis.py --help
 
 From the repo root and within the virtual environment:
 
-1. Edit `slurm_config.yaml` for your cluster (`CORES_PER_NODE`, `PARTITION`, `TIME_LIMIT`).
+1. Edit `slurm_config.yaml` for your cluster (`CORES_PER_NODE`, `PARTITION`, `TIME_LIMIT`, `ACCOUNT`).
 
 ```bash
 python collect_metrics.py --manual --submit # runs automated metric collection
