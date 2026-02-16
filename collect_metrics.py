@@ -35,6 +35,7 @@ PARAMS = {
     "kacc": ["1.0e-3", "1.0e-4", "1.0e-5", "1.0e-6"],
     "dcut": [4, 5, 6, 7, 8, 9, 10],
     "cores" : [1],
+    "size": ["3000,18.77"],
 }
 
 LAMMPS_COMMAND_TEMPLATE = (
