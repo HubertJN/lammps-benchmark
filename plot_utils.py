@@ -6,7 +6,7 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import inch
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, PageBreak
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, PageBreak, Preformatted
 
 from reportlab.graphics.shapes import Drawing, String, Group, Line
 from reportlab.graphics.charts.piecharts import Pie
@@ -200,6 +200,71 @@ def format_param_value(v):
     if isinstance(v, float):
         return f"{v:.6g}"
     return str(v)
+
+
+def _resolve_input_path(input_s: str | None, *, runs_dir: Path) -> Path | None:
+    if not input_s:
+        return None
+    p = Path(str(input_s))
+    if p.is_absolute():
+        return p
+    if p.exists():
+        return p
+    # Typical case: report is generated from repo root with runs/ next to inputs.
+    alt = runs_dir.parent / p
+    if alt.exists():
+        return alt
+    return p
+
+
+def _extract_manual_sweep_vars_from_input(inp: Path | None) -> dict:
+    """Best-effort extraction of ks/kacc/dcut from a LAMMPS input script."""
+    if inp is None:
+        return {}
+    try:
+        text = inp.read_text()
+    except Exception:
+        return {}
+
+    out: dict[str, object] = {}
+
+    # Example: kspace_style      ewald/dipole 1.0e-4
+    m = re.search(r"(?im)^\s*kspace_style\s+(\S+)\s+(\S+)", text)
+    if m:
+        out["ks"] = m.group(1)
+        out["kacc"] = m.group(2)
+
+    # Example: variable          rDipoleCut    equal   5.0
+    m = re.search(r"(?im)^\s*variable\s+rDipoleCut\s+equal\s+([^\s#]+)", text)
+    if m:
+        raw = m.group(1)
+        try:
+            out["dcut"] = float(raw)
+        except Exception:
+            out["dcut"] = raw
+
+    return out
+
+
+def _sorted_unique_numeric(values: list[object]) -> list[object]:
+    def key(v: object):
+        try:
+            return (0, float(v))
+        except Exception:
+            return (1, str(v))
+
+    out = []
+    seen = set()
+    for v in values:
+        if v is None:
+            continue
+        s = str(v)
+        if s in seen:
+            continue
+        seen.add(s)
+        out.append(v)
+    out.sort(key=key)
+    return out
 
 
 def _resolve_log_path(log_path: str | None, *, runs_dir: Path) -> Path | None:
@@ -975,11 +1040,9 @@ def build_pdf(
     if manual_run is not None:
         manual_tps = safe_float((manual_run.get("performance") or {}).get("timesteps_per_s"))
 
-    manual_energy = extract_final_total_energy_from_run(manual_run, runs_dir=runs_dir) if manual_run else None
-
     params_list = [params_by_tag.get(r.get("tag", "unknown"), {}) for r in table_runs]
 
-    header = ["Rank", "kacc", "ks", "dcut", "Tag", "timesteps/s", "speedup", "ΔE%", "walltime"]
+    header = ["Rank", "kacc", "ks", "dcut", "Tag", "timesteps/s", "speedup", "walltime"]
     rows = [header]
 
     for i, r in enumerate(table_runs, start=1):
@@ -991,20 +1054,13 @@ def build_pdf(
         if manual_tps is not None and tps is not None and manual_tps > 0:
             speedup_s = f"{(tps / manual_tps):.2f}x"
 
-        energy_diff_s = "n/a"
-        if manual_energy is not None and manual_energy != 0:
-            sweep_energy = extract_final_total_energy_from_run(r, runs_dir=runs_dir)
-            if sweep_energy is not None:
-                energy_diff_pct = (sweep_energy - manual_energy) / manual_energy * 100.0
-                energy_diff_s = f"{energy_diff_pct:+.3f}%"
-
         walltime = r.get("total_wall_time") or "n/a"
 
         p = params_by_tag.get(tag, {})
         kacc_s = format_param_value(p.get("kacc"))
         ks_s = format_param_value(p.get("ks") or (r.get("kspace") or {}).get("style"))
         dcut_s = format_param_value(p.get("dcut"))
-        row = [str(i), kacc_s, ks_s, dcut_s, tag, tps_s, speedup_s, energy_diff_s, walltime]
+        row = [str(i), kacc_s, ks_s, dcut_s, tag, tps_s, speedup_s, walltime]
         rows.append(row)
 
 
@@ -1017,7 +1073,6 @@ def build_pdf(
         0.95 * inch,  # Tag
         0.75 * inch,  # timesteps/s
         0.70 * inch,  # speedup
-        0.75 * inch,  # ΔE%
         0.80 * inch,  # walltime
     ]
     col_widths = base_widths
@@ -1045,27 +1100,83 @@ def build_pdf(
 
     story.append(Paragraph("Overview", styles["Heading2"]))
 
-    mx_s, mx_tag, mx_run = max_wall_time(summary)
-    if mx_s is not None:
-        mx_line = f"Max wall time (finished runs): <b>{fmt_num(mx_s, digits=4)} s</b>"
-        if mx_tag:
-            mx_line += f" (tag: <b>{mx_tag}</b>)"
-        if mx_run is not None:
-            mx_atoms, mx_prod_steps = extract_production_size_from_run(mx_run, runs_dir=runs_dir)
-            atoms_s = f"{mx_atoms:,}" if isinstance(mx_atoms, int) else "n/a"
-            prod_steps_s = f"{mx_prod_steps:,}" if isinstance(mx_prod_steps, int) else "n/a"
-            mx_line += (
-                f". Size: <b>{atoms_s} atoms</b>; "
-                f"production run length: <b>{prod_steps_s} timesteps</b>"
+    # Manual baseline variables + sweep ranges (kacc/dcut).
+    manual_params_raw = {}
+    try:
+        manual_params_raw = json.loads((runs_dir / manual_tag / "params.json").read_text())
+    except Exception:
+        manual_params_raw = {}
+
+    manual_input = _resolve_input_path(manual_params_raw.get("input"), runs_dir=runs_dir)
+    manual_vars = _extract_manual_sweep_vars_from_input(manual_input)
+    if manual_input is not None:
+        manual_vars.setdefault("input", str(manual_input))
+
+    sweep_kacc = []
+    sweep_dcut = []
+    for tag in (params_by_tag or {}).keys():
+        if tag == manual_tag:
+            continue
+        p = params_by_tag.get(tag) or {}
+        if p.get("kacc") is not None:
+            sweep_kacc.append(p.get("kacc"))
+        if p.get("dcut") is not None:
+            sweep_dcut.append(p.get("dcut"))
+
+    sweep_kacc = _sorted_unique_numeric(sweep_kacc)
+    sweep_dcut = _sorted_unique_numeric(sweep_dcut)
+
+    manual_parts = []
+    if manual_vars.get("ks") is not None:
+        manual_parts.append(f"ks={format_param_value(manual_vars.get('ks'))}")
+    if manual_vars.get("kacc") is not None:
+        manual_parts.append(f"kacc={format_param_value(manual_vars.get('kacc'))}")
+    if manual_vars.get("dcut") is not None:
+        manual_parts.append(f"dcut={format_param_value(manual_vars.get('dcut'))}")
+
+    if manual_parts:
+        story.append(
+            Paragraph(
+                f"Manual baseline <b>{manual_tag}</b> used <b>" + "; ".join(manual_parts) + "</b>.",
+                body,
             )
-        mx_line += "."
-        story.append(Paragraph(mx_line, body))
+        )
+
+    # Manual baseline wall time + throughput.
+    if manual_run is not None:
+        runner = manual_run.get("runner") or {}
+        manual_time_s = safe_float(runner.get("time_s"))
+        if manual_time_s is None:
+            manual_time_s = _parse_hms_walltime_s(manual_run.get("total_wall_time"))
+
+        wt_s = f"{fmt_num(manual_time_s, digits=4)} s" if manual_time_s is not None else "n/a"
+        mtps = safe_float((manual_run.get("performance") or {}).get("timesteps_per_s"))
+        mtps_s = f"{mtps:.3f}" if mtps is not None else "n/a"
+        story.append(
+            Paragraph(
+                f"Manual baseline wall time: <b>{wt_s}</b>. Manual baseline timesteps/s: <b>{mtps_s}</b>.",
+                body,
+            )
+        )
+
+        # Manual size + production length on its own line.
+        m_atoms, m_prod_steps = extract_production_size_from_run(manual_run, runs_dir=runs_dir)
+        atoms_s = f"{m_atoms:,}" if isinstance(m_atoms, int) else "n/a"
+        prod_steps_s = f"{m_prod_steps:,}" if isinstance(m_prod_steps, int) else "n/a"
+        story.append(
+            Paragraph(
+                f"Size: <b>{atoms_s} atoms</b>; production run length: <b>{prod_steps_s} timesteps</b>.",
+                body,
+            )
+        )
+
+    story.append(Paragraph("kacc=<b>{" + ", ".join(format_param_value(v) for v in sweep_kacc) + "}</b>", body))
+    story.append(Paragraph("dcut=<b>{" + ", ".join(format_param_value(v) for v in sweep_dcut) + "}</b>", body))
 
     table_desc = (
     "This table shows the best-performing sweep runs for each value of kacc. "
     "Runs are ranked by timesteps/s. "
     "Speedup is relative to the manual baseline run. "
-    "ΔE% is the final total energy difference relative to the manual run. "
     )
     story.append(Paragraph(table_desc, body))
     story.append(Spacer(1, 0.06 * inch))
@@ -1206,6 +1317,57 @@ def build_pdf(
     story.append(Paragraph("Timed Out Runs", styles["Heading2"]))
     story.append(Spacer(1, 0.06 * inch))
     story.append(Paragraph(f"Timed out runs: <b>{len(timed_out)}</b>.", body))
+
+    # Appendix: example Slurm script (for user reference).
+    story.append(PageBreak())
+    story.append(Paragraph("Appendix: Example Slurm Script", styles["Heading2"]))
+    story.append(Spacer(1, 0.06 * inch))
+    story.append(
+        Paragraph(
+            "This is an <b>example</b> Slurm script for the sweep runs. You will likely need to make additional changes for your cluster. "
+            "In particular, you must set <b>{account}</b> and replace <b>run_*</b> with the specific run directory/tag you intend to launch (e.g. <b>runs/run_000012</b>).",
+            body,
+        )
+    )
+    story.append(Spacer(1, 0.08 * inch))
+
+    slurm_example = """#!/bin/bash
+
+#SBATCH --output=runs/run_*/slurm.out
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=1
+#SBATCH --mem-per-cpu=3850
+#SBATCH --partition=compute
+#SBATCH --time=00:02:00
+#SBATCH --account={account}
+
+
+module purge
+module load GCC/13.2.0 OpenMPI/4.1.6 IPython FFTW
+
+export OMP_NUM_THREADS=1
+export OMP_PROC_BIND=true
+export OMP_PLACES=threads
+export FFTW_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+export OPENBLAS_NUM_THREADS=1
+
+srun --cpu-bind=cores mylammps/build/lmp -k on t 1 -sf kk \\
+    -in in.performance_test.lmp \\
+    -var ks pppm_dipole -var kacc 1.0e-6 -var dcut 10 \\
+    -var tag run_* -log runs/run_*/lammps.log
+"""
+
+    code_style = ParagraphStyle(
+        "CodeBlockSmall",
+        parent=styles.get("Code", styles["BodyText"]),
+        fontName="Courier",
+        fontSize=7.5,
+        leading=9,
+        spaceAfter=6,
+    )
+    story.append(Preformatted(slurm_example, code_style))
 
     doc.build(story)
 
