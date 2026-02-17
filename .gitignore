@@ -4,3 +4,4 @@ modules.sh
 __pycache__
 runs
 log.lammps
+performance_review.pdf
