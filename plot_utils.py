@@ -1383,7 +1383,7 @@ def generate_performance_review(
     sweep_input: str = "in.performance_test.lmp",
 ):
     json_path = json_path or (runs_dir / "metrics_summary.json")
-    out_pdf = out_pdf or (runs_dir / "performance_review.pdf")
+    out_pdf = out_pdf or ("performance_review.pdf")
 
     summary = json.loads(json_path.read_text())
     runs = summary.get("runs", [])
