@@ -39,7 +39,6 @@ PARAMS = {
 }
 
 LAMMPS_COMMAND_TEMPLATE = (
-    "mylammps/build/lmp -k on t 1 -sf kk -in in.performance_test.lmp "
     "-var ks {ks} "
     "-var kacc {kacc} "
     "-var dcut {dcut} "
@@ -67,7 +66,7 @@ export FFTW_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
 
-srun --cpu-bind=cores {lammps_cmd}
+srun --cpu-bind=cores mylammps/build/lmp -k on t $SLURM_CPUS_PER_TASK -sf kk -in in.performance_test.lmp {lammps_cmd}
 """
 
 def main(argv: list[str] | None = None) -> int:

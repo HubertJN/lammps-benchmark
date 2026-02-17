@@ -20,7 +20,6 @@ PARAMS = {
 }
 
 LAMMPS_COMMAND_TEMPLATE = (
-    "mylammps/build/lmp -k on t 1 -sf kk -in in.scaling_test.lmp "
     "-var ks {ks} "
     "-var kacc {kacc} "
     "-var dcut {dcut} "
@@ -44,14 +43,14 @@ SLURM_TEMPLATE = """#!/bin/bash
 module purge
 module load GCC/13.2.0 OpenMPI/4.1.6 IPython FFTW
 
-export OMP_NUM_THREADS=1
+export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 export OMP_PROC_BIND=true
 export OMP_PLACES=threads
 export FFTW_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
 
-srun --cpu-bind=cores {lammps_cmd}
+srun --cpu-bind=cores mylammps/build/lmp -k on t $SLURM_CPUS_PER_TASK -sf kk -in in.scaling_test.lmp {lammps_cmd}
 """
 
 
