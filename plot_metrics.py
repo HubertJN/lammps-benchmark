@@ -6,7 +6,7 @@ from plot_utils import generate_performance_review
 
 RUNS_DIR = Path("runs")
 JSON_PATH = RUNS_DIR / "metrics_summary.json"
-OUT_PDF = RUNS_DIR / "performance_review.pdf"
+OUT_PDF =Path("performance_review.pdf")
 
 TOP_N_RUNS = 3          # top N by timesteps/s
 MERGE_LT_PCT = 5.0      # merge any pie slice < this % into "Remainder"
