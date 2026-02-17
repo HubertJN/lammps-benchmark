@@ -1,4 +1,3 @@
-
 # LAMMPS benchmark, parameter sweep and report generator
 
 This is a personal project that started as me tuning an input script (for myself and for collaborator workflows), and then grew into a full automation suite: run a manual baseline, sweep key simulation parameters, collect parsed metrics, and generate a final PDF performance report. <br>
@@ -19,7 +18,7 @@ This is a personal project that started as me tuning an input script (for myself
 Main scripts:
 
 - `collect_metrics.py` -> runs the manual baseline to derive a walltime, generates (and optionally submits) scaling `job.slurm` scripts under `runs/`; use `--collect` to write a consolidated metrics JSON
-- `plot_metrics.py` -> generates `runs/performance_review.pdf`
+- `plot_metrics.py` -> generates `performance_review.pdf`
 - `scaling_analysis.py` -> generates (and optionally submits) scaling `job.slurm` scripts under a chosen output directory
 
 ---
@@ -32,8 +31,8 @@ Main scripts:
 - Python 3.10+ (with `venv` and `pip`)
 - CMake
 - C++ compiler toolchain (e.g. `gcc/g++`)
-- MPI (recommended for scaling runs; optional for single-rank runs)
-- FFTW3 (recommended; used for KSPACE and Kokkos FFT)
+- MPI
+- FFTW3
 
 > Note: A GPU is **not** required for this project. The build instructions below produce a **CPU-only** Kokkos (OpenMP) LAMMPS binary.
 
@@ -53,12 +52,6 @@ Recommended:
 
 - `reportlab`
 
-Install with:
-
-```bash
-python3 -m pip install reportlab
-````
-
 ---
 
 ## Installation
@@ -75,7 +68,6 @@ cd lammps-benchmark
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install --upgrade pip
 python -m pip install reportlab
 ```
 
@@ -156,8 +148,6 @@ From the repo root and within the virtual environment:
 python collect_metrics.py --manual --submit # runs automated metric collection
 ```
 
-After submission, it will optionally prompt you to monitor jobs using `squeue`.
-
 ```
 # after jobs finish:
 python collect_metrics.py --collect
@@ -168,8 +158,8 @@ This will:
 
 1. Generate and submit a manual baseline job (`runs/manual/job.slurm`)
 2. Generate and submit sweep jobs (`runs/run_*/job.slurm`) once manual job is finished
-4. Collect logs into `runs/benchmark_summary.json` (with `--collect`)
-5. Generate report at `runs/performance_review.pdf`
+3. Collect logs into `runs/benchmark_summary.json` (with `--collect`)
+4. Generate report at `performance_review.pdf`
 
 ---
 
@@ -191,7 +181,7 @@ Scaling (Slurm script generation):
 
 ## Scaling runs
 
-1. Edit `slurm_config.yaml` for your cluster (`CORES_PER_NODE`, `PARTITION`, `TIME_LIMIT`).
+1. Edit `slurm_config.yaml` for your cluster (`CORES_PER_NODE`, `PARTITION`, `TIME_LIMIT`, `ACCOUNT`).
 
 2. Generate scripts (no submit):
 
@@ -205,7 +195,10 @@ python scaling_analysis.py
 python scaling_analysis.py --submit
 ```
 
-After submission, it will optionally prompt you to monitor jobs using `squeue`.
+4. Generate PDF:
+```
+python plot_metrics.py
+```
 
 ---
 
